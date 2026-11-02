@@ -21,7 +21,7 @@ scripts/setup_mac.sh --docs ~/Documents/测试文档   # 演示改为索引你�
 
 ```bash
 # 从 https://ollama.com 下载安装 Ollama，打开应用后执行：
-ollama pull qwen3:4b-instruct   # 不要用 qwen3:4b：该标签是只会思考的 Thinking-2507 版本，think:false 无效
+ollama pull qwen3:4b-instruct   # 不要用 qwen3:4b：该标签指向 Thinking-2507，关闭思考无效，回答前会先输出推理
 ollama pull bge-m3
 ```
 
@@ -117,7 +117,7 @@ privacy:
 | 切块边界 | 不跨一级标题 | 不跨前两级标题 | Markdown 常把一级标题当文档标题，只按一级切会让整篇合成一块，引用过粗 |
 | 未变化判断 | 每次都计算哈希 | 大小和修改时间都没变时跳过哈希 | 全量 2–4 GB 时节省大量读盘时间；内容哈希仍用于改名识别 |
 | 模型引用 | `providers.ollama` | `providers.local`（`type: ollama`） | 与 `local/qwen3:4b-instruct` 这种引用格式保持一致 |
-| 聊天模型标签 | `qwen3:4b` | `qwen3:4b-instruct`（Qwen3-4B-Instruct-2507，Q4_K_M） | 实测 `qwen3:4b` 指向 Thinking-2507，关闭思考无效，回答前先输出大段推理，首 token 87 秒 |
+| 聊天模型标签 | `qwen3:4b` | `qwen3:4b-instruct`（Qwen3-4B-Instruct-2507，Q4_K_M） | `qwen3:4b` 实际指向 Thinking-2507，实测设置 `think: false` 后仍先输出推理内容；该次首 token 86.9 s，但主要耗在首个 token 之前（推测为冷启动加载 + 内存换页），与推理无直接关系 |
 
 ## 五、已知限制（POC 范围外）
 
