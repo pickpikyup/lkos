@@ -52,11 +52,13 @@ def main() -> int:
     for i in range(args.rounds):
         q = QUESTIONS[i % len(QUESTIONS)]
         t = time.perf_counter()
-        p.embed(args.embed_model, [q] + [CONTEXT[:800]] * 4)
+        # 每轮在资料开头加上不同内容，避免 Ollama 复用上一轮的提示缓存，让首 token 时间更接近真实提问
+        ctx = f"（第 {i + 1} 轮资料，编号 {i * 7919 % 1000}）" + CONTEXT
+        p.embed(args.embed_model, [q] + [ctx[:800]] * 4)
         emb_ms = int((time.perf_counter() - t) * 1000)
         res = p.chat(args.chat_model, [
             {"role": "system", "content": "只根据资料回答，并用 [编号] 标注出处。"},
-            {"role": "user", "content": f"资料：\n[1]\n{CONTEXT}\n\n问题：{q}"},
+            {"role": "user", "content": f"资料：\n[1]\n{ctx}\n\n问题：{q}"},
         ], ChatOptions(max_tokens=256, num_ctx=8192, think=False))
         mem, swap = memory_snapshot()
         rows.append((emb_ms, res.ttft_ms, res.latency_ms, res.input_tokens, mem, swap))
