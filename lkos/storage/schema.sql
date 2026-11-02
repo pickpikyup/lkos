@@ -1,4 +1,7 @@
--- Local Knowledge OS POC schema（设计文档第 6 节）
+-- Local Knowledge OS schema v2
+-- v2 相对设计文档第 6 节的变化（面向 100 GB 级语料）：
+--   向量改为二值粗筛（chunks_vec，bit）+ int8 精排（vectors），不再存 float32；
+--   vectors 按文本哈希去重，作为 Embedding 缓存；index_runs 记录复用数与耗时。
 -- {dim} 在建表时替换为配置中的 Embedding 维度。
 
 CREATE TABLE IF NOT EXISTS sources (
@@ -38,19 +41,29 @@ CREATE TABLE IF NOT EXISTS chunks (
     para_end      INTEGER,
     line_start    INTEGER,
     line_end      INTEGER,
-    source_kind   TEXT NOT NULL DEFAULT 'text'
+    source_kind   TEXT NOT NULL DEFAULT 'text',
+    text_hash     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(text_hash);
+
+-- 向量缓存：同一文本只存一份。emb = int8（每向量单独缩放），bits = 二值向量
+CREATE TABLE IF NOT EXISTS vectors (
+    hash  TEXT PRIMARY KEY,
+    emb   BLOB NOT NULL,
+    bits  BLOB NOT NULL
+);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
     tokens,
     tokenize = 'unicode61 remove_diacritics 2'
 );
 
+-- 二值向量粗筛表：每块 dim/8 字节，lang 为元数据列，严格语言模式下可直接过滤
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(
     chunk_id   INTEGER PRIMARY KEY,
     lang       TEXT,
-    embedding  FLOAT[{dim}] distance_metric=cosine
+    embedding  BIT[{dim}]
 );
 
 CREATE TABLE IF NOT EXISTS index_meta (
@@ -70,7 +83,10 @@ CREATE TABLE IF NOT EXISTS index_runs (
     files_moved    INTEGER DEFAULT 0,
     files_failed   INTEGER DEFAULT 0,
     files_removed  INTEGER DEFAULT 0,
-    chunks_added   INTEGER DEFAULT 0
+    chunks_added   INTEGER DEFAULT 0,
+    chunks_reused  INTEGER DEFAULT 0,
+    parse_ms       INTEGER DEFAULT 0,
+    embed_ms       INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS call_logs (

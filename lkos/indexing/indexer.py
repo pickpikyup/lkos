@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 import os
 import unicodedata
 from dataclasses import dataclass, field
@@ -18,6 +19,7 @@ from lkos.errors import EncryptedFileError, ParseError
 from lkos.indexing.chunker import Chunker
 from lkos.indexing.tokenize import to_fts_tokens
 from lkos.parsers import parse_file, parser_for
+from lkos.storage.vectors import text_hash
 from lkos.storage.repository import IndexRun, Repository
 from lkos.types import FileInfo, ProgressEvent
 
@@ -35,6 +37,10 @@ class IndexReport:
     files_removed: int
     chunks_added: int
     seconds: float
+    chunks_reused: int = 0
+    parse_seconds: float = 0.0
+    embed_seconds: float = 0.0
+    vectors_pruned: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     cleanup_done: bool = True
 
@@ -83,8 +89,6 @@ class Indexer:
     # ---------- 主流程 ----------
     def index_folder(self, folder: Path, limit: int | None = None,
                      on_progress: ProgressCallback | None = None) -> IndexReport:
-        import time
-
         t0 = time.perf_counter()
         folder = Path(folder).expanduser().resolve()
         if not folder.is_dir():
@@ -118,12 +122,15 @@ class Indexer:
             removed = [f.id for f in self.repo.files_of_source(source_id) if f.path not in seen]
             self.repo.remove_files(removed)
             run.files_removed = len(removed)
+        pruned = self.repo.prune_vectors() if (run.files_indexed or run.files_removed) else 0
         self.repo.finish_run(run)
         return IndexReport(
             run_id=run.id, files_seen=run.files_seen, files_indexed=run.files_indexed,
             files_skipped=run.files_skipped, files_moved=run.files_moved, files_failed=run.files_failed,
             files_removed=run.files_removed, chunks_added=run.chunks_added,
             seconds=round(time.perf_counter() - t0, 2), failures=failures, cleanup_done=cleanup,
+            chunks_reused=run.chunks_reused, parse_seconds=round(run.parse_ms / 1000, 2),
+            embed_seconds=round(run.embed_ms / 1000, 2), vectors_pruned=pruned,
         )
 
     def _index_one(self, p: Path, path: str, source_id: int, run: IndexRun) -> tuple[str, str | None]:
@@ -151,6 +158,7 @@ class Indexer:
                 run.files_moved += 1
                 return "moved", moved.path
 
+        t_parse = time.perf_counter()
         try:
             blocks = parse_file(parser, p)
         except EncryptedFileError as e:
@@ -163,17 +171,34 @@ class Indexer:
             return "failed", str(e)
 
         chunks = self.chunker.chunk(blocks)
+        run.parse_ms += int((time.perf_counter() - t_parse) * 1000)
         if not chunks:
             self.repo.mark_skipped(source_id, info, "no extractable text")
             run.files_skipped += 1
             return "skipped", "没有可抽取的文本（可能是扫描件，POC 不做 OCR）"
 
+        # Embedding 缓存：相同文本（重复的页眉页脚、模板页、修改文件中没改的段落）只算一次向量
+        hashes = [text_hash(c.text) for c in chunks]
+        cached = self.repo.existing_hashes(hashes)
+        todo: dict[str, str] = {}
+        for c, h in zip(chunks, hashes):
+            if h not in cached and h not in todo:
+                todo[h] = c.text
+        new_vecs: dict[str, list[float]] = {}
+        t_embed = time.perf_counter()
+        items = list(todo.items())
         batch = self.cfg.embedding.batch_size
-        vectors: list[list[float]] = []
-        for i in range(0, len(chunks), batch):
-            vectors.extend(self.gateway.embed([c.text for c in chunks[i:i + batch]]))
+        for i in range(0, len(items), batch):
+            part = items[i:i + batch]
+            for (h, _), vec in zip(part, self.gateway.embed([t for _, t in part])):
+                new_vecs[h] = vec
+        run.embed_ms += int((time.perf_counter() - t_embed) * 1000)
+        vectors: list[list[float] | None] = []
+        for h in hashes:
+            vectors.append(new_vecs.pop(h, None))  # 同一文件内重复的文本只写入一次向量
         tokens = [to_fts_tokens(c.text, c.lang) for c in chunks]
         self.repo.replace_file_chunks(source_id, info, chunks, vectors, tokens)
         run.files_indexed += 1
         run.chunks_added += len(chunks)
+        run.chunks_reused += len(chunks) - len(todo)
         return "indexed", None

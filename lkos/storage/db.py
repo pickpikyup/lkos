@@ -8,9 +8,9 @@ from pathlib import Path
 
 import sqlite_vec
 
-from lkos.errors import EmbeddingMismatchError, LkosError
+from lkos.errors import EmbeddingMismatchError, LkosError, SchemaVersionError
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
 
 
 def connect(db_path: Path | str) -> sqlite3.Connection:
@@ -36,6 +36,16 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection, embedding_model: str, embedding_dim: int) -> None:
     """建表（幂等）。首次建表记录 Embedding 元数据；之后校验是否一致。"""
+    if int(embedding_dim) % 8:
+        raise LkosError("Embedding 维度必须是 8 的倍数（二值向量按字节存储）")
+    existing = conn.execute("SELECT name FROM sqlite_master WHERE name = 'index_meta'").fetchone()
+    if existing:
+        version = get_meta(conn).get("schema_version")
+        if version != SCHEMA_VERSION:
+            raise SchemaVersionError(
+                f"索引格式为 v{version}，当前程序需要 v{SCHEMA_VERSION}（向量存储已改为二值 + int8）。"
+                "请删除数据目录下的 lkos.db 后重新索引。"
+            )
     sql = resources.files("lkos.storage").joinpath("schema.sql").read_text("utf-8")
     conn.executescript(sql.replace("{dim}", str(int(embedding_dim))))
     meta = get_meta(conn)

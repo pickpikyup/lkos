@@ -27,3 +27,7 @@ class RemoteDisabledError(LkosError):
 
 class EmbeddingMismatchError(LkosError):
     """索引中记录的 Embedding 模型或维度与当前配置不一致，需要重建索引。"""
+
+
+class SchemaVersionError(LkosError):
+    """数据库是旧版本格式，需要重建索引。"""
