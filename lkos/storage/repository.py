@@ -1,0 +1,289 @@
+"""所有 SQL 读写集中在这里。
+
+注意：FTS5 与 vec0 虚拟表不会随外键级联删除，删除文本块时必须同时删除它们的行。
+"""
+
+from __future__ import annotations
+
+import os
+import sqlite3
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Iterator, Sequence
+
+import sqlite_vec
+
+from lkos.types import CallLog, Chunk, FileInfo, FileRecord, Location, RetrievedChunk
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+@dataclass
+class IndexRun:
+    id: int
+    source_id: int
+    files_seen: int = 0
+    files_indexed: int = 0
+    files_skipped: int = 0
+    files_moved: int = 0
+    files_failed: int = 0
+    files_removed: int = 0
+    chunks_added: int = 0
+    aborted: bool = False
+
+
+class Repository:
+    def __init__(self, conn: sqlite3.Connection, owner_id: str = "local"):
+        self.conn = conn
+        self.owner_id = owner_id
+
+    # ---------- 事务 ----------
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        self.conn.execute("BEGIN")
+        try:
+            yield self.conn
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
+        else:
+            self.conn.execute("COMMIT")
+
+    # ---------- 来源 ----------
+    def upsert_source(self, path: str) -> int:
+        row = self.conn.execute("SELECT id FROM sources WHERE path = ?", (path,)).fetchone()
+        if row:
+            return int(row["id"])
+        cur = self.conn.execute(
+            "INSERT INTO sources(owner_id, path, created_at) VALUES (?, ?, ?)",
+            (self.owner_id, path, now_iso()),
+        )
+        return int(cur.lastrowid)
+
+    # ---------- 文件 ----------
+    @staticmethod
+    def _file(row: sqlite3.Row) -> FileRecord:
+        return FileRecord(
+            id=row["id"], source_id=row["source_id"], path=row["path"], file_type=row["file_type"],
+            content_hash=row["content_hash"], status=row["status"], error=row["error"],
+            chunk_count=row["chunk_count"], size_bytes=row["size_bytes"], mtime=row["mtime"],
+        )
+
+    def get_file(self, path: str) -> FileRecord | None:
+        row = self.conn.execute("SELECT * FROM files WHERE path = ?", (path,)).fetchone()
+        return self._file(row) if row else None
+
+    def find_missing_by_hash(self, content_hash: str) -> FileRecord | None:
+        """同内容、已索引、但旧路径在磁盘上已不存在的文件：视为被移动或改名。"""
+        rows = self.conn.execute(
+            "SELECT * FROM files WHERE content_hash = ? AND status = 'indexed' ORDER BY id",
+            (content_hash,),
+        ).fetchall()
+        for row in rows:
+            if not os.path.exists(row["path"]):
+                return self._file(row)
+        return None
+
+    def move_file(self, file_id: int, new_path: str, source_id: int, mtime: float) -> None:
+        self.conn.execute(
+            "UPDATE files SET path = ?, source_id = ?, mtime = ? WHERE id = ?",
+            (new_path, source_id, mtime, file_id),
+        )
+
+    def touch_file(self, file_id: int, mtime: float) -> None:
+        self.conn.execute("UPDATE files SET mtime = ? WHERE id = ?", (mtime, file_id))
+
+    def _upsert_file(self, source_id: int, info: FileInfo, status: str, error: str | None, chunk_count: int) -> int:
+        self.conn.execute(
+            """INSERT INTO files(source_id, owner_id, path, file_type, content_hash, size_bytes, mtime,
+                                 status, error, chunk_count, indexed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(path) DO UPDATE SET
+                 source_id = excluded.source_id, file_type = excluded.file_type,
+                 content_hash = excluded.content_hash, size_bytes = excluded.size_bytes,
+                 mtime = excluded.mtime, status = excluded.status, error = excluded.error,
+                 chunk_count = excluded.chunk_count, indexed_at = excluded.indexed_at""",
+            (source_id, self.owner_id, info.path, info.file_type, info.content_hash, info.size_bytes,
+             info.mtime, status, error, chunk_count, now_iso()),
+        )
+        return int(self.conn.execute("SELECT id FROM files WHERE path = ?", (info.path,)).fetchone()["id"])
+
+    def _delete_chunks_of(self, file_ids: Sequence[int]) -> None:
+        for fid in file_ids:
+            ids = [r["id"] for r in self.conn.execute("SELECT id FROM chunks WHERE file_id = ?", (fid,))]
+            if ids:
+                marks = ",".join("?" * len(ids))
+                self.conn.execute(f"DELETE FROM chunks_fts WHERE rowid IN ({marks})", ids)
+                self.conn.execute(f"DELETE FROM chunks_vec WHERE chunk_id IN ({marks})", ids)
+            self.conn.execute("DELETE FROM chunks WHERE file_id = ?", (fid,))
+
+    def replace_file_chunks(
+        self,
+        source_id: int,
+        info: FileInfo,
+        chunks: Sequence[Chunk],
+        vectors: Sequence[Sequence[float]],
+        fts_tokens: Sequence[str],
+    ) -> int:
+        """单个事务：删旧块（含 fts / vec）→ 写文件记录 → 写新块。返回文件 id。"""
+        if not (len(chunks) == len(vectors) == len(fts_tokens)):
+            raise ValueError("chunks、vectors、fts_tokens 数量必须一致")
+        with self.transaction():
+            old = self.get_file(info.path)
+            if old:
+                self._delete_chunks_of([old.id])
+            file_id = self._upsert_file(source_id, info, "indexed", None, len(chunks))
+            for chunk, vec, tokens in zip(chunks, vectors, fts_tokens):
+                loc = chunk.location
+                cur = self.conn.execute(
+                    """INSERT INTO chunks(file_id, owner_id, ordinal, text, lang, page, heading_path,
+                                          para_start, para_end, line_start, line_end)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (file_id, self.owner_id, chunk.ordinal, chunk.text, chunk.lang, loc.page, loc.heading_path,
+                     loc.para_start, loc.para_end, loc.line_start, loc.line_end),
+                )
+                cid = int(cur.lastrowid)
+                self.conn.execute("INSERT INTO chunks_fts(rowid, tokens) VALUES (?, ?)", (cid, tokens))
+                self.conn.execute(
+                    "INSERT INTO chunks_vec(chunk_id, lang, embedding) VALUES (?, ?, ?)",
+                    (cid, chunk.lang, sqlite_vec.serialize_float32(list(vec))),
+                )
+        return file_id
+
+    def _mark(self, source_id: int, info: FileInfo, status: str, error: str) -> None:
+        with self.transaction():
+            old = self.get_file(info.path)
+            if old:
+                self._delete_chunks_of([old.id])
+            self._upsert_file(source_id, info, status, error, 0)
+
+    def mark_failed(self, source_id: int, info: FileInfo, error: str) -> None:
+        self._mark(source_id, info, "failed", error)
+
+    def mark_skipped(self, source_id: int, info: FileInfo, reason: str) -> None:
+        self._mark(source_id, info, "skipped", reason)
+
+    def remove_files(self, file_ids: Sequence[int]) -> None:
+        if not file_ids:
+            return
+        with self.transaction():
+            self._delete_chunks_of(file_ids)
+            marks = ",".join("?" * len(file_ids))
+            self.conn.execute(f"DELETE FROM files WHERE id IN ({marks})", list(file_ids))
+
+    def files_of_source(self, source_id: int) -> list[FileRecord]:
+        rows = self.conn.execute("SELECT * FROM files WHERE source_id = ? ORDER BY id", (source_id,))
+        return [self._file(r) for r in rows]
+
+    # ---------- 检索 ----------
+    def knn(self, vector: Sequence[float], k: int, lang: str | None = None) -> list[tuple[int, float]]:
+        sql = "SELECT chunk_id, distance FROM chunks_vec WHERE embedding MATCH ? AND k = ?"
+        params: list = [sqlite_vec.serialize_float32(list(vector)), int(k)]
+        if lang:
+            sql += " AND lang = ?"
+            params.append(lang)
+        sql += " ORDER BY distance"
+        return [(int(r["chunk_id"]), float(r["distance"])) for r in self.conn.execute(sql, params)]
+
+    def fts_search(self, match_query: str, k: int, lang: str | None = None) -> list[tuple[int, float]]:
+        if not match_query.strip():
+            return []
+        sql = (
+            "SELECT f.rowid AS id, bm25(chunks_fts) AS score FROM chunks_fts f "
+            "JOIN chunks c ON c.id = f.rowid WHERE chunks_fts MATCH ?"
+        )
+        params: list = [match_query]
+        if lang:
+            sql += " AND c.lang = ?"
+            params.append(lang)
+        sql += " ORDER BY score LIMIT ?"
+        params.append(int(k))
+        return [(int(r["id"]), float(r["score"])) for r in self.conn.execute(sql, params)]
+
+    def load_chunks(self, chunk_ids: Sequence[int]) -> list[RetrievedChunk]:
+        """按传入顺序返回，附带文件路径与定位信息。"""
+        if not chunk_ids:
+            return []
+        marks = ",".join("?" * len(chunk_ids))
+        rows = self.conn.execute(
+            f"""SELECT c.*, f.path AS file_path, f.file_type AS file_type
+                FROM chunks c JOIN files f ON f.id = c.file_id WHERE c.id IN ({marks})""",
+            list(chunk_ids),
+        ).fetchall()
+        by_id = {r["id"]: r for r in rows}
+        out = []
+        for cid in chunk_ids:
+            r = by_id.get(cid)
+            if r is None:
+                continue
+            out.append(RetrievedChunk(
+                chunk_id=r["id"], file_path=r["file_path"], file_type=r["file_type"], text=r["text"],
+                lang=r["lang"],
+                location=Location(page=r["page"], heading_path=r["heading_path"], para_start=r["para_start"],
+                                  para_end=r["para_end"], line_start=r["line_start"], line_end=r["line_end"]),
+            ))
+        return out
+
+    # ---------- 索引运行 ----------
+    def start_run(self, source_id: int) -> IndexRun:
+        cur = self.conn.execute(
+            "INSERT INTO index_runs(source_id, started_at) VALUES (?, ?)", (source_id, now_iso())
+        )
+        return IndexRun(id=int(cur.lastrowid), source_id=source_id)
+
+    def finish_run(self, run: IndexRun, aborted: bool = False) -> None:
+        run.aborted = aborted
+        self.conn.execute(
+            """UPDATE index_runs SET finished_at = ?, aborted = ?, files_seen = ?, files_indexed = ?,
+                 files_skipped = ?, files_moved = ?, files_failed = ?, files_removed = ?, chunks_added = ?
+               WHERE id = ?""",
+            (now_iso(), int(aborted), run.files_seen, run.files_indexed, run.files_skipped, run.files_moved,
+             run.files_failed, run.files_removed, run.chunks_added, run.id),
+        )
+
+    # ---------- 日志与统计 ----------
+    def log_call(self, entry: CallLog) -> None:
+        self.conn.execute(
+            """INSERT INTO call_logs(owner_id, ts, task, provider, model, latency_ms, ttft_ms, input_tokens,
+                                     output_tokens, mem_available_mb, swap_used_mb, error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (self.owner_id, now_iso(), entry.task, entry.provider, entry.model, entry.latency_ms, entry.ttft_ms,
+             entry.input_tokens, entry.output_tokens, entry.mem_available_mb, entry.swap_used_mb, entry.error),
+        )
+
+    def stats(self) -> dict:
+        q = lambda sql: self.conn.execute(sql).fetchone()[0]  # noqa: E731
+        by_status = {r["status"]: r["n"] for r in self.conn.execute(
+            "SELECT status, COUNT(*) AS n FROM files GROUP BY status")}
+        by_lang = {r["lang"]: r["n"] for r in self.conn.execute(
+            "SELECT lang, COUNT(*) AS n FROM chunks GROUP BY lang")}
+        by_type = {r["file_type"]: r["n"] for r in self.conn.execute(
+            "SELECT file_type, COUNT(*) AS n FROM files WHERE status = 'indexed' GROUP BY file_type")}
+        last = self.conn.execute(
+            "SELECT * FROM index_runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+        return {
+            "sources": q("SELECT COUNT(*) FROM sources"),
+            "files_total": q("SELECT COUNT(*) FROM files"),
+            "files_by_status": by_status,
+            "files_by_type": by_type,
+            "chunks_total": q("SELECT COUNT(*) FROM chunks"),
+            "chunks_by_lang": by_lang,
+            "calls_total": q("SELECT COUNT(*) FROM call_logs"),
+            "last_run": dict(last) if last else None,
+        }
+
+    def failed_files(self) -> list[FileRecord]:
+        rows = self.conn.execute("SELECT * FROM files WHERE status IN ('failed', 'skipped') ORDER BY path")
+        return [self._file(r) for r in rows]
+
+    def recent_calls(self, task: str | None = None, limit: int = 1000) -> list[dict]:
+        sql, params = "SELECT * FROM call_logs", []
+        if task:
+            sql += " WHERE task = ?"
+            params.append(task)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in self.conn.execute(sql, params)]

@@ -1,0 +1,217 @@
+"""读取并校验配置：内置默认值 + 用户 config.yaml 深度合并。"""
+
+from __future__ import annotations
+
+import copy
+import os
+from dataclasses import dataclass, field
+from importlib import resources
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from lkos.errors import ConfigError
+
+KNOWN_PROVIDER_TYPES = {"ollama", "hermes", "fake"}
+REMOTE_PROVIDER_TYPES = {"hermes"}
+
+
+def default_home() -> Path:
+    """数据目录：优先环境变量 LKOS_HOME，否则为项目根目录下的 data/。
+
+    设计文档原定 ~/Library/Application Support/LocalKnowledgeOS/；
+    POC 阶段按要求把所有数据留在项目文件夹内。
+    """
+    env = os.environ.get("LKOS_HOME")
+    if env:
+        return Path(env).expanduser().resolve()
+    return (Path(__file__).resolve().parent.parent / "data").resolve()
+
+
+@dataclass
+class ProviderConfig:
+    name: str
+    type: str
+    options: dict[str, Any]
+
+    @property
+    def is_remote(self) -> bool:
+        return self.type in REMOTE_PROVIDER_TYPES
+
+
+@dataclass
+class ChatModelConfig:
+    ref: str
+    context_window: int = 8192
+    think: bool = False
+
+
+@dataclass
+class EmbeddingConfig:
+    ref: str
+    dim: int
+    batch_size: int = 16
+
+
+@dataclass
+class TaskConfig:
+    name: str
+    default_model: str
+    temperature: float = 0.3
+    max_tokens: int = 1024
+
+
+@dataclass
+class IndexingConfig:
+    extensions: list[str] = field(default_factory=lambda: [".pdf", ".docx", ".md"])
+    max_file_size_mb: float = 100
+    chunk_max_chars: int = 800
+    chunk_overlap_chars: int = 100
+    skip_hidden: bool = True
+
+
+@dataclass
+class RetrievalConfig:
+    top_k: int = 5
+    candidates_per_method: int = 30
+    rrf_k: int = 60
+    language_filter: str = "auto"
+
+
+@dataclass
+class PrivacyConfig:
+    remote_enabled: bool = False
+    offline_mode: bool = True
+
+
+@dataclass
+class Config:
+    providers: dict[str, ProviderConfig]
+    chat_models: dict[str, ChatModelConfig]
+    embedding: EmbeddingConfig
+    tasks: dict[str, TaskConfig]
+    indexing: IndexingConfig
+    retrieval: RetrievalConfig
+    privacy: PrivacyConfig
+
+    def chat_model(self, ref: str) -> ChatModelConfig:
+        """未在 models.chat 中登记的模型使用默认参数（允许用户临时覆盖）。"""
+        return self.chat_models.get(ref) or ChatModelConfig(ref=ref)
+
+
+def split_model_ref(ref: str) -> tuple[str, str]:
+    """'local/qwen3:4b' -> ('local', 'qwen3:4b')。"""
+    if not isinstance(ref, str) or "/" not in ref:
+        raise ConfigError(f"模型引用必须是 '<provider>/<model>' 格式：{ref!r}")
+    provider, model = ref.split("/", 1)
+    if not provider or not model:
+        raise ConfigError(f"模型引用必须是 '<provider>/<model>' 格式：{ref!r}")
+    return provider, model
+
+
+def deep_merge(base: dict, override: dict) -> dict:
+    out = copy.deepcopy(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def default_raw() -> dict:
+    text = resources.files("lkos").joinpath("config.default.yaml").read_text("utf-8")
+    return yaml.safe_load(text)
+
+
+def load_config(path: Path | None = None, overrides: dict | None = None) -> Config:
+    raw = default_raw()
+    if path is not None and Path(path).exists():
+        try:
+            user = yaml.safe_load(Path(path).read_text("utf-8")) or {}
+        except yaml.YAMLError as e:
+            raise ConfigError(f"配置文件不是合法 YAML：{path}：{e}") from e
+        if not isinstance(user, dict):
+            raise ConfigError(f"配置文件顶层必须是映射：{path}")
+        raw = deep_merge(raw, user)
+    if overrides:
+        raw = deep_merge(raw, overrides)
+    return parse_config(raw)
+
+
+def parse_config(raw: dict) -> Config:
+    try:
+        providers = {}
+        for name, opts in (raw.get("providers") or {}).items():
+            opts = dict(opts or {})
+            ptype = opts.pop("type", None)
+            if ptype not in KNOWN_PROVIDER_TYPES:
+                raise ConfigError(f"providers.{name}.type 不支持：{ptype!r}")
+            providers[name] = ProviderConfig(name=name, type=ptype, options=opts)
+
+        models = raw.get("models") or {}
+        chat_models = {
+            ref: ChatModelConfig(
+                ref=ref,
+                context_window=int((v or {}).get("context_window", 8192)),
+                think=bool((v or {}).get("think", False)),
+            )
+            for ref, v in (models.get("chat") or {}).items()
+        }
+        emb = models.get("embedding") or {}
+        embedding = EmbeddingConfig(
+            ref=str(emb["ref"]), dim=int(emb["dim"]), batch_size=int(emb.get("batch_size", 16))
+        )
+
+        tasks = {}
+        for name, t in (raw.get("tasks") or {}).items():
+            t = t or {}
+            tasks[name] = TaskConfig(
+                name=name,
+                default_model=str(t["default_model"]),
+                temperature=float(t.get("temperature", 0.3)),
+                max_tokens=int(t.get("max_tokens", 1024)),
+            )
+
+        idx = raw.get("indexing") or {}
+        indexing = IndexingConfig(
+            extensions=[e.lower() if e.startswith(".") else "." + e.lower() for e in idx.get("extensions", [".pdf", ".docx", ".md"])],
+            max_file_size_mb=float(idx.get("max_file_size_mb", 100)),
+            chunk_max_chars=int(idx.get("chunk_max_chars", 800)),
+            chunk_overlap_chars=int(idx.get("chunk_overlap_chars", 100)),
+            skip_hidden=bool(idx.get("skip_hidden", True)),
+        )
+        ret = raw.get("retrieval") or {}
+        retrieval = RetrievalConfig(
+            top_k=int(ret.get("top_k", 5)),
+            candidates_per_method=int(ret.get("candidates_per_method", 30)),
+            rrf_k=int(ret.get("rrf_k", 60)),
+            language_filter=str(ret.get("language_filter", "auto")),
+        )
+        pv = raw.get("privacy") or {}
+        privacy = PrivacyConfig(
+            remote_enabled=bool(pv.get("remote_enabled", False)),
+            offline_mode=bool(pv.get("offline_mode", True)),
+        )
+    except (KeyError, TypeError, ValueError) as e:
+        raise ConfigError(f"配置缺少字段或类型错误：{e}") from e
+
+    cfg = Config(providers, chat_models, embedding, tasks, indexing, retrieval, privacy)
+    _validate(cfg)
+    return cfg
+
+
+def _validate(cfg: Config) -> None:
+    for ref in [cfg.embedding.ref, *[t.default_model for t in cfg.tasks.values()]]:
+        provider, _ = split_model_ref(ref)
+        if provider not in cfg.providers:
+            raise ConfigError(f"模型 {ref} 引用了未定义的 provider：{provider}")
+    if cfg.embedding.dim <= 0:
+        raise ConfigError("models.embedding.dim 必须为正整数")
+    if cfg.indexing.chunk_overlap_chars >= cfg.indexing.chunk_max_chars:
+        raise ConfigError("chunk_overlap_chars 必须小于 chunk_max_chars")
+    if cfg.retrieval.language_filter not in ("auto", "all"):
+        raise ConfigError("retrieval.language_filter 只能是 auto 或 all")
+    if "knowledge_qa" not in cfg.tasks:
+        raise ConfigError("tasks.knowledge_qa 必须配置")

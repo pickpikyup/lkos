@@ -1,0 +1,46 @@
+# Local Knowledge OS POC 默认配置。
+# 用户配置文件（<LKOS_HOME>/config.yaml）只需写要覆盖的字段，其余取这里的默认值。
+
+providers:
+  local:
+    type: ollama
+    base_url: http://127.0.0.1:11434
+    keep_alive: 30m
+    timeout_s: 120
+  hermes:                       # 远端 Provider，POC 只保留接口
+    type: hermes
+    base_url: null
+    api_key_ref: keychain:lkos-hermes
+
+models:
+  chat:
+    local/qwen3:4b-instruct:
+      context_window: 8192
+      think: false
+  embedding:
+    ref: local/bge-m3
+    dim: 1024
+    batch_size: 16
+
+tasks:
+  knowledge_qa:
+    default_model: local/qwen3:4b-instruct
+    temperature: 0.3
+    max_tokens: 1024
+
+indexing:
+  extensions: [.pdf, .docx, .md]
+  max_file_size_mb: 100
+  chunk_max_chars: 800
+  chunk_overlap_chars: 100
+  skip_hidden: true
+
+retrieval:
+  top_k: 5
+  candidates_per_method: 30
+  rrf_k: 60
+  language_filter: auto         # auto | all
+
+privacy:
+  remote_enabled: false
+  offline_mode: true
