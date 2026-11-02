@@ -295,6 +295,7 @@ def eval_cmd(
     questions: Path = typer.Argument(..., exists=True, dir_okay=False, help="测试问题集 YAML"),
     k: int = typer.Option(5, "--k", min=1, max=20),
     with_answer: bool = typer.Option(False, "--with-answer", help="同时评测生成与引用"),
+    lang: str = typer.Option("auto", "--lang", help="auto（按问题语言过滤）| all（不过滤）| zh | en | fr"),
 ):
     """运行测试问题集：输出前 k 命中率、MRR，以及引用有效率。"""
     from lkos.evaluation.evaluate import evaluate, load_questions
@@ -303,7 +304,7 @@ def eval_cmd(
         a = open_app()
         qs = load_questions(questions)
         with console.status("评测中…"):
-            rep = evaluate(qs, a.retriever, qa=a.qa if with_answer else None, k=k)
+            rep = evaluate(qs, a.retriever, qa=a.qa if with_answer else None, k=k, lang=lang)
     except LkosError as e:
         fail(e)
     table = Table("#", "问题", "命中", "名次", "检索到的文件", *(["引用", "无效"] if with_answer else []))

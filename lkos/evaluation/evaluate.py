@@ -101,18 +101,18 @@ def matches(retrieved_path: str, expected: str) -> bool:
     return r == e or r.endswith("/" + e)
 
 
-def evaluate(questions: list[Question], retriever, qa=None, k: int = 5) -> EvalReport:
+def evaluate(questions: list[Question], retriever, qa=None, k: int = 5, lang: str = "auto") -> EvalReport:
     report = EvalReport(k=k, with_answer=qa is not None)
     for q in questions:
         if qa is not None:
             try:
-                ans = qa.ask(q.question, k=k)
+                ans = qa.ask(q.question, k=k, lang=lang)
             except Exception as e:  # noqa: BLE001 - 单题失败不影响整体评测
                 report.results.append(QuestionResult(q.question, q.expected_files, [], False, None, error=str(e)))
                 continue
             hits = ans.context
         else:
-            hits = retriever.search(q.question, k=k)
+            hits = retriever.search(q.question, k=k, lang=lang)
         files: list[str] = []
         for h in hits:
             if h.file_path not in files:

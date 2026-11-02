@@ -72,10 +72,18 @@ def test_eval_with_answers(app, tmp_path):
 
 def test_eval_records_per_question_error(app):
     class Boom:
-        def ask(self, q, k=5):
+        def ask(self, q, k=5, **_):
             raise RuntimeError("model crashed")
 
     from lkos.evaluation.evaluate import Question
 
     rep = evaluate([Question("x", ["a.md"])], app.retriever, qa=Boom())
     assert rep.results[0].error == "model crashed" and rep.hit_rate == 0
+
+
+def test_eval_lang_option(app, tmp_path):
+    from lkos.evaluation.evaluate import Question
+
+    q = [Question("Où se trouve la machine à café ?", ["security-policy.md"])]
+    assert not evaluate(q, app.retriever, k=5).results[0].hit          # 按语言过滤：只返回法文块
+    assert evaluate(q, app.retriever, k=8, lang="all").results[0].hit   # 不过滤：英文文档也会进入候选
