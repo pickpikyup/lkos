@@ -98,7 +98,9 @@ def test_full_flow_index_search_ask_status(cli, corpus):
     assert "吞吐" in out
 
     out = cli("search", "项目二期的预算上限是多少？")
-    assert "问题语言：zh" in out and "过滤：zh" in out
+    assert "问题语言：zh" in out and "模式：soft" in out and "过滤：不过滤" in out
+    out = cli("search", "项目二期的预算上限是多少？", "--lang-mode", "strict")
+    assert "模式：strict" in out and "过滤：zh" in out
     assert "项目计划书.docx" in out or "评审会议纪要.pdf" in out
 
     out = cli("ask", "项目二期的预算上限是多少？", "--show-context")
@@ -166,9 +168,16 @@ def test_eval_command(cli, corpus, tmp_path):
         {"question": "Où se trouve la machine à café ?", "expected_files": ["guide-accueil.md"]},
     ], allow_unicode=True), encoding="utf-8")
     out = cli("eval", str(q))
-    assert "前 5 命中率：100%（3/3）" in out
-    out = cli("eval", str(q), "--with-answer")
+    assert "命中率：100%（3/3）" in out
+    res = tmp_path / "out" / "results.json"
+    out = cli("eval", str(q), "--with-answer", "--model", "test/other-chat", "--out", str(res))
     assert "含有效引用的回答：100%" in out and "首 token 中位数" in out
+    import json
+
+    data = json.loads(res.read_text("utf-8"))
+    assert data["model"] == "test/other-chat" and data["citation_rate"] == 1.0
+    first = data["results"][0]
+    assert first["answer"].startswith("根据资料") and first["cited"][0].startswith("[1] ")
 
 
 def test_ask_empty_index(cli):

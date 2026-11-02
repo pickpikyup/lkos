@@ -64,6 +64,7 @@ lkos chat                                     # 连续提问，exit 退出
 ```bash
 lkos eval my-questions.yaml                 # 检索命中率，目标 ≥ 80%
 lkos eval my-questions.yaml --with-answer   # 加上引用有效率（目标 ≥ 90%）和首 token 时间（目标 ≤ 5s）
+lkos eval my-questions.yaml --with-answer --model local/qwen3:1.7b --out logs/1.7b.json   # 换模型对比，保存每题回答
 ```
 
 ### 6. 内存基准（实施第 1 步）
@@ -100,14 +101,19 @@ indexing:
   chunk_max_chars: 800
   chunk_overlap_chars: 100
 retrieval:
-  top_k: 5
-  language_filter: auto   # auto：只匹配与问题同语言的文本块；all：不过滤
+  top_k: 4
+  language_filter: soft   # soft：同语言加权但不排除 | strict：只检索同语言 | all：不区分
+  vector_candidates: 200  # 二值粗筛候选数
 privacy:
   remote_enabled: false
   offline_mode: true
 ```
 
 更换 Embedding 模型或维度后需要重建索引：删除 `data/lkos.db` 后重新执行 `lkos index`，程序检测到不一致时也会提示。
+v0.1 建的索引与 v0.2 格式不兼容，同样需要删除后重建。
+
+**8 GB 内存建议**：运行一次 `scripts/ollama_tune.sh`，开启 Flash Attention 与 8 bit KV 缓存（重启电脑后需再运行）。
+用 `scripts/ollama_tune.sh --check` 查看当前设置。
 
 ## 四、与设计文档的差异
 
@@ -117,6 +123,11 @@ privacy:
 | 切块边界 | 不跨一级标题 | 不跨前两级标题 | Markdown 常把一级标题当文档标题，只按一级切会让整篇合成一块，引用过粗 |
 | 未变化判断 | 每次都计算哈希 | 大小和修改时间都没变时跳过哈希 | 全量 2–4 GB 时节省大量读盘时间；内容哈希仍用于改名识别 |
 | 模型引用 | `providers.ollama` | `providers.local`（`type: ollama`） | 与 `local/qwen3:4b-instruct` 这种引用格式保持一致 |
+| 向量存储（v0.2） | float32 向量，sqlite-vec 全量余弦 | 二值向量粗筛 + int8 精排，按文本哈希去重缓存 | 面向 100 GB 级语料：向量体积约为原来的 1/2.5，100 万块检索约 0.3 s、进程内存约 50 MB（`scripts/benchmark_scale.py`） |
+| Embedding 计算（v0.2） | 每块都计算 | 相同文本只算一次；修改文件时只重算改动的块 | 页眉页脚、模板页大量重复；增量更新大幅减少计算 |
+| 语言处理（v0.2） | 只检索与问题同语言的块 | 默认同语言加权（soft），可切换 strict / all | 真实文档实测：硬过滤不提升同语言命中率，却会排除中英混合文档中另一种语言的答案 |
+| 语言检测（v0.2） | 汉字占字母比例 ≥ 0.3 | 汉字数 ≥ 英文单词数 | 夹带大量型号、模型名的中文段落曾被误判为英文 |
+| 上下文与片段（v0.2） | 8K 上下文、5 个片段、输出上限 1,024 | 4K 上下文、4 个片段、输出上限 512 | 8 GB 实测交换区增长约 8 GB；回答多在 50 tokens 以内 |
 | 聊天模型标签 | `qwen3:4b` | `qwen3:4b-instruct`（Qwen3-4B-Instruct-2507，Q4_K_M） | `qwen3:4b` 实际指向 Thinking-2507，实测设置 `think: false` 后仍先输出推理内容；该次首 token 86.9 s，但主要耗在首个 token 之前（推测为冷启动加载 + 内存换页），与推理无直接关系 |
 
 ## 五、已知限制（POC 范围外）

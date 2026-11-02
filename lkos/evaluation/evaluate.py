@@ -34,6 +34,8 @@ class QuestionResult:
     invalid_citations: int | None = None
     ttft_ms: int | None = None
     error: str | None = None
+    answer: str | None = None
+    cited: list[str] = field(default_factory=list)   # 引用的位置描述，便于人工核对
 
 
 @dataclass
@@ -41,6 +43,19 @@ class EvalReport:
     k: int
     results: list[QuestionResult] = field(default_factory=list)
     with_answer: bool = False
+    mode: str | None = None
+    model: str | None = None
+
+    def to_dict(self) -> dict:
+        from dataclasses import asdict
+
+        return {
+            "k": self.k, "mode": self.mode, "model": self.model, "with_answer": self.with_answer,
+            "hit_rate": round(self.hit_rate, 4), "mrr": round(self.mrr, 4),
+            "citation_rate": None if self.citation_rate is None else round(self.citation_rate, 4),
+            "invalid_total": self.invalid_total, "ttft_median_ms": self.ttft_median_ms,
+            "results": [asdict(r) for r in self.results],
+        }
 
     @property
     def total(self) -> int:
@@ -101,18 +116,19 @@ def matches(retrieved_path: str, expected: str) -> bool:
     return r == e or r.endswith("/" + e)
 
 
-def evaluate(questions: list[Question], retriever, qa=None, k: int = 5, lang: str = "auto") -> EvalReport:
-    report = EvalReport(k=k, with_answer=qa is not None)
+def evaluate(questions: list[Question], retriever, qa=None, k: int = 5, lang: str = "auto",
+             mode: str | None = None, model: str | None = None) -> EvalReport:
+    report = EvalReport(k=k, with_answer=qa is not None, mode=mode, model=model)
     for q in questions:
         if qa is not None:
             try:
-                ans = qa.ask(q.question, k=k, lang=lang)
+                ans = qa.ask(q.question, k=k, lang=lang, mode=mode, model_override=model)
             except Exception as e:  # noqa: BLE001 - 单题失败不影响整体评测
                 report.results.append(QuestionResult(q.question, q.expected_files, [], False, None, error=str(e)))
                 continue
             hits = ans.context
         else:
-            hits = retriever.search(q.question, k=k, lang=lang)
+            hits = retriever.search(q.question, k=k, lang=lang, mode=mode)
         files: list[str] = []
         for h in hits:
             if h.file_path not in files:
@@ -123,5 +139,7 @@ def evaluate(questions: list[Question], retriever, qa=None, k: int = 5, lang: st
             res.valid_citations = len(ans.citations)
             res.invalid_citations = len(ans.invalid_refs)
             res.ttft_ms = ans.ttft_ms
+            res.answer = ans.text
+            res.cited = [f"[{c.ref}] {c.chunk.describe()}" for c in ans.citations]
         report.results.append(res)
     return report

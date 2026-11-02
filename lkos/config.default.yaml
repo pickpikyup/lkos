@@ -14,19 +14,23 @@ providers:
 
 models:
   chat:
+    # 8 GB 内存实测：8K 上下文时交换区增长约 8 GB，改为 4K（KV 缓存减半，约 0.6 GB）
     local/qwen3:4b-instruct:
-      context_window: 8192
+      context_window: 4096
+      think: false
+    local/qwen3:1.7b:              # 更小的候选模型，用于对比测试
+      context_window: 4096
       think: false
   embedding:
     ref: local/bge-m3
     dim: 1024
-    batch_size: 16
+    batch_size: 32
 
 tasks:
   knowledge_qa:
     default_model: local/qwen3:4b-instruct
     temperature: 0.3
-    max_tokens: 1024
+    max_tokens: 512                # 实测回答多在 50 tokens 以内；留足 4K 上下文给 4 个片段
 
 indexing:
   extensions: [.pdf, .docx, .md]
@@ -36,10 +40,12 @@ indexing:
   skip_hidden: true
 
 retrieval:
-  top_k: 5
+  top_k: 4                      # 4K 上下文下放 4 个 800 字的片段
   candidates_per_method: 30
   rrf_k: 60
-  language_filter: auto         # auto | all
+  language_filter: soft         # soft：同语言加权但不排除 | strict：只检索同语言 | all：不区分
+  same_lang_boost: 1.2
+  vector_candidates: 200        # 二值粗筛候选数，越大召回越好、越慢
 
 privacy:
   remote_enabled: false

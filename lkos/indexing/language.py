@@ -8,6 +8,7 @@ from functools import lru_cache
 SUPPORTED = ("zh", "en", "fr")
 _HAN = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 _LATIN = re.compile(r"[A-Za-zÀ-ÿŒœ]")
+_LATIN_WORD = re.compile(r"[A-Za-zÀ-ÿŒœ]{2,}")
 _FR_HINT = re.compile(
     r"[àâçéèêëîïôûùüÿœ]|\b(le|la|les|des|du|une|est|sont|et|pour|dans|avec|qui|que|où|au|aux|nous|vous)\b",
     re.IGNORECASE,
@@ -16,7 +17,10 @@ _EN_HINT = re.compile(
     r"\b(the|is|are|and|for|with|what|which|how|of|to|in|on|does|do|policy|who|when|where)\b", re.IGNORECASE
 )
 
-ZH_RATIO = 0.3  # 汉字占全部字母类字符的比例达到该值即判为中文
+# 判为中文的条件：汉字数 ≥ 英文单词数 × ZH_WORD_RATIO。
+# v0.1 按“汉字 / 字母”比例判断，夹带很多型号、模型名的中文段落（如 “DeepSeek V3 BF16 4台 Atlas 800I A2”）
+# 会因字母多而被误判为英文；一个汉字与一个英文单词的信息量更接近，按单词计数更稳。
+ZH_WORD_RATIO = 1.0
 
 
 @lru_cache(maxsize=1)
@@ -32,7 +36,8 @@ def detect_lang(text: str) -> str:
     latin = len(_LATIN.findall(text))
     if han + latin == 0:
         return "other"
-    if han / (han + latin) >= ZH_RATIO:
+    words = len(_LATIN_WORD.findall(text))
+    if han and han >= words * ZH_WORD_RATIO:
         return "zh"
     if latin < 3:
         return "other"

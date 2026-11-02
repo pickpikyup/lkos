@@ -73,10 +73,12 @@ class IndexingConfig:
 
 @dataclass
 class RetrievalConfig:
-    top_k: int = 5
+    top_k: int = 4
     candidates_per_method: int = 30
     rrf_k: int = 60
-    language_filter: str = "auto"
+    language_filter: str = "soft"   # soft | strict | all（auto 为旧写法，等同 strict）
+    same_lang_boost: float = 1.2    # soft 模式下同语言文本块的融合分数倍率
+    vector_candidates: int = 200    # 二值粗筛取多少候选再做 int8 精排
 
 
 @dataclass
@@ -184,10 +186,12 @@ def parse_config(raw: dict) -> Config:
         )
         ret = raw.get("retrieval") or {}
         retrieval = RetrievalConfig(
-            top_k=int(ret.get("top_k", 5)),
+            top_k=int(ret.get("top_k", 4)),
             candidates_per_method=int(ret.get("candidates_per_method", 30)),
             rrf_k=int(ret.get("rrf_k", 60)),
-            language_filter=str(ret.get("language_filter", "auto")),
+            language_filter=str(ret.get("language_filter", "soft")),
+            same_lang_boost=float(ret.get("same_lang_boost", 1.2)),
+            vector_candidates=int(ret.get("vector_candidates", 200)),
         )
         pv = raw.get("privacy") or {}
         privacy = PrivacyConfig(
@@ -211,7 +215,11 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("models.embedding.dim 必须为正整数")
     if cfg.indexing.chunk_overlap_chars >= cfg.indexing.chunk_max_chars:
         raise ConfigError("chunk_overlap_chars 必须小于 chunk_max_chars")
-    if cfg.retrieval.language_filter not in ("auto", "all"):
-        raise ConfigError("retrieval.language_filter 只能是 auto 或 all")
+    if cfg.retrieval.language_filter not in ("soft", "strict", "all", "auto"):
+        raise ConfigError("retrieval.language_filter 只能是 soft、strict 或 all")
+    if cfg.retrieval.same_lang_boost < 1:
+        raise ConfigError("retrieval.same_lang_boost 不能小于 1")
+    if cfg.retrieval.vector_candidates < cfg.retrieval.candidates_per_method:
+        raise ConfigError("retrieval.vector_candidates 不能小于 candidates_per_method")
     if "knowledge_qa" not in cfg.tasks:
         raise ConfigError("tasks.knowledge_qa 必须配置")

@@ -123,7 +123,9 @@ def index(
     table = Table("项目", "数量", show_header=False)
     for label, value in [("扫描文件", rep.files_seen), ("新索引", rep.files_indexed), ("未变化/跳过", rep.files_skipped),
                          ("改名/移动", rep.files_moved), ("失败", rep.files_failed), ("已删除", rep.files_removed),
-                         ("新增文本块", rep.chunks_added), ("耗时（秒）", rep.seconds)]:
+                         ("新增文本块", rep.chunks_added), ("其中复用缓存向量", rep.chunks_reused),
+                         ("清理无用向量", rep.vectors_pruned), ("耗时（秒）", rep.seconds),
+                         ("　解析（秒）", rep.parse_seconds), ("　计算向量（秒）", rep.embed_seconds)]:
         table.add_row(label, str(value))
     console.print(table)
     if rep.files_indexed and rep.seconds:
@@ -138,17 +140,19 @@ def index(
 @app.command()
 def search(
     query: str = typer.Argument(..., help="检索内容"),
-    k: int = typer.Option(5, "--k", min=1, max=50, help="返回片段数"),
+    k: Optional[int] = typer.Option(None, "--k", min=1, max=50, help="返回片段数，默认取配置 retrieval.top_k"),
     lang: str = typer.Option("auto", "--lang", help="auto | zh | en | fr | all"),
+    lang_mode: Optional[str] = typer.Option(None, "--lang-mode", help="soft（默认，同语言加权）| strict（只检索同语言）| all"),
 ):
     """只检索不生成：显示前 k 个片段、分数和位置。"""
     try:
         a = open_app()
-        hits = a.retriever.search(query, k=k, lang=lang)
+        hits = a.retriever.search(query, k=k, lang=lang, mode=lang_mode)
         dbg = a.retriever.last_debug
     except LkosError as e:
         fail(e)
-    console.print(f"问题语言：{dbg.lang}　过滤：{dbg.lang_filter or '不过滤'}　关键词：{dbg.fts_query or '（无）'}")
+    console.print(f"问题语言：{dbg.lang}　模式：{dbg.mode}　过滤：{dbg.lang_filter or '不过滤'}　"
+                  f"关键词：{dbg.fts_query or '（无）'}")
     if not hits:
         console.print("没有找到相关片段。")
     for i, h in enumerate(hits, start=1):
@@ -195,25 +199,26 @@ def print_answer(ans: Answer, streamed: bool, show_context: bool) -> None:
 
 
 def _ask_once(a: App, question: str, k: int, model: Optional[str], lang: str, show_context: bool,
-              stream: bool) -> None:
+              stream: bool, mode: Optional[str] = None) -> None:
     on_token = (lambda t: (sys.stdout.write(t), sys.stdout.flush())) if stream else None
-    ans = a.qa.ask(question, k=k, model_override=model, lang=lang, on_token=on_token)
+    ans = a.qa.ask(question, k=k, model_override=model, lang=lang, on_token=on_token, mode=mode)
     print_answer(ans, streamed=stream and not ans.no_context, show_context=show_context)
 
 
 @app.command()
 def ask(
     question: str = typer.Argument(..., help="问题"),
-    k: int = typer.Option(5, "--k", min=1, max=20),
+    k: Optional[int] = typer.Option(None, "--k", min=1, max=20, help="片段数，默认取配置 retrieval.top_k"),
     model: Optional[str] = typer.Option(None, "--model", help="本次使用的模型，如 local/qwen3:4b-instruct"),
     lang: str = typer.Option("auto", "--lang", help="auto | zh | en | fr | all"),
+    lang_mode: Optional[str] = typer.Option(None, "--lang-mode", help="soft（默认，同语言加权）| strict（只检索同语言）| all"),
     show_context: bool = typer.Option(False, "--show-context", help="显示送入模型的片段"),
     stream: bool = typer.Option(True, "--stream/--no-stream", help="流式输出"),
 ):
     """检索 + 生成：输出带引用的回答。"""
     try:
         a = open_app()
-        _ask_once(a, question, k, model, lang, show_context, stream)
+        _ask_once(a, question, k, model, lang, show_context, stream, lang_mode)
     except LkosError as e:
         fail(e)
     a.close()
@@ -221,9 +226,10 @@ def ask(
 
 @app.command()
 def chat(
-    k: int = typer.Option(5, "--k", min=1, max=20),
+    k: Optional[int] = typer.Option(None, "--k", min=1, max=20, help="片段数，默认取配置 retrieval.top_k"),
     model: Optional[str] = typer.Option(None, "--model"),
     lang: str = typer.Option("auto", "--lang"),
+    lang_mode: Optional[str] = typer.Option(None, "--lang-mode", help="soft（默认，同语言加权）| strict（只检索同语言）| all"),
     show_context: bool = typer.Option(False, "--show-context"),
     stream: bool = typer.Option(True, "--stream/--no-stream"),
 ):
@@ -243,7 +249,7 @@ def chat(
         if q.lower() in ("exit", "quit", ":q"):
             break
         try:
-            _ask_once(a, q, k, model, lang, show_context, stream)
+            _ask_once(a, q, k, model, lang, show_context, stream, lang_mode)
         except LkosError as e:
             err.print(f"[bold red]错误：[/]{e}")
     a.close()
@@ -264,10 +270,14 @@ def status(failed: bool = typer.Option(False, "--failed", help="列出失败与�
         ("数据目录", str(a.home)),
         ("Embedding 模型", f"{a.cfg.embedding.ref}（{a.cfg.embedding.dim} 维）"),
         ("问答模型", a.cfg.tasks["knowledge_qa"].default_model),
+        ("上下文 / 片段数", f"{a.cfg.chat_model(a.cfg.tasks['knowledge_qa'].default_model).context_window} tokens / "
+                           f"{a.cfg.retrieval.top_k}"),
+        ("语言模式", a.cfg.retrieval.language_filter),
         ("来源文件夹", str(s["sources"])),
         ("文件", f"{s['files_total']}  {s['files_by_status']}"),
         ("已索引格式", str(s["files_by_type"])),
         ("文本块", f"{s['chunks_total']}  {s['chunks_by_lang']}"),
+        ("向量（去重后）", str(s["vectors_total"])),
         ("数据库大小", f"{size_mb:.1f} MB"),
         ("模型调用次数", str(s["calls_total"])),
         ("远端调用", "开启" if a.cfg.privacy.remote_enabled and not a.cfg.privacy.offline_mode else "关闭"),
@@ -293,9 +303,12 @@ def status(failed: bool = typer.Option(False, "--failed", help="列出失败与�
 @app.command("eval")
 def eval_cmd(
     questions: Path = typer.Argument(..., exists=True, dir_okay=False, help="测试问题集 YAML"),
-    k: int = typer.Option(5, "--k", min=1, max=20),
+    k: Optional[int] = typer.Option(None, "--k", min=1, max=20, help="片段数，默认取配置 retrieval.top_k"),
     with_answer: bool = typer.Option(False, "--with-answer", help="同时评测生成与引用"),
-    lang: str = typer.Option("auto", "--lang", help="auto（按问题语言过滤）| all（不过滤）| zh | en | fr"),
+    lang: str = typer.Option("auto", "--lang", help="auto（自动识别问题语言）| all（不区分）| zh | en | fr"),
+    lang_mode: Optional[str] = typer.Option(None, "--lang-mode", help="soft（默认，同语言加权）| strict（只检索同语言）| all"),
+    model: Optional[str] = typer.Option(None, "--model", help="本次评测使用的问答模型，如 local/qwen3:1.7b"),
+    out: Optional[Path] = typer.Option(None, "--out", help="把每题结果（含回答原文与引用）写入 JSON 文件"),
 ):
     """运行测试问题集：输出前 k 命中率、MRR，以及引用有效率。"""
     from lkos.evaluation.evaluate import evaluate, load_questions
@@ -304,7 +317,8 @@ def eval_cmd(
         a = open_app()
         qs = load_questions(questions)
         with console.status("评测中…"):
-            rep = evaluate(qs, a.retriever, qa=a.qa if with_answer else None, k=k, lang=lang)
+            rep = evaluate(qs, a.retriever, qa=a.qa if with_answer else None, k=k or a.cfg.retrieval.top_k,
+                           lang=lang, mode=lang_mode, model=model)
     except LkosError as e:
         fail(e)
     table = Table("#", "问题", "命中", "名次", "检索到的文件", *(["引用", "无效"] if with_answer else []))
@@ -323,6 +337,12 @@ def eval_cmd(
         console.print(f"含有效引用的回答：[bold]{(rate or 0):.0%}[/]　目标 ≥ 90%　已移除无效引用：{rep.invalid_total}")
         if rep.ttft_median_ms is not None:
             console.print(f"首 token 中位数：{rep.ttft_median_ms / 1000:.2f}s　目标 ≤ 5s")
+    if out:
+        import json
+
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(rep.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"每题结果已写入：{out}")
     a.close()
 
 

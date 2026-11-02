@@ -85,5 +85,5 @@ def test_eval_lang_option(app, tmp_path):
     from lkos.evaluation.evaluate import Question
 
     q = [Question("Où se trouve la machine à café ?", ["security-policy.md"])]
-    assert not evaluate(q, app.retriever, k=5).results[0].hit          # 按语言过滤：只返回法文块
-    assert evaluate(q, app.retriever, k=8, lang="all").results[0].hit   # 不过滤：英文文档也会进入候选
+    assert not evaluate(q, app.retriever, k=5, mode="strict").results[0].hit  # 严格模式：只返回法文块
+    assert evaluate(q, app.retriever, k=8, lang="all").results[0].hit          # 不区分语言：英文文档也会进入候选

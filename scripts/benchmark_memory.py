@@ -36,6 +36,7 @@ def main() -> int:
     ap.add_argument("--rounds", type=int, default=10)
     ap.add_argument("--chat-model", default="qwen3:4b-instruct")
     ap.add_argument("--embed-model", default="bge-m3")
+    ap.add_argument("--num-ctx", type=int, default=4096)
     args = ap.parse_args()
 
     cfg = load_config(None)
@@ -59,7 +60,7 @@ def main() -> int:
         res = p.chat(args.chat_model, [
             {"role": "system", "content": "只根据资料回答，并用 [编号] 标注出处。"},
             {"role": "user", "content": f"资料：\n[1]\n{ctx}\n\n问题：{q}"},
-        ], ChatOptions(max_tokens=256, num_ctx=8192, think=False))
+        ], ChatOptions(max_tokens=256, num_ctx=args.num_ctx, think=False))
         mem, swap = memory_snapshot()
         rows.append((emb_ms, res.ttft_ms, res.latency_ms, res.input_tokens, mem, swap))
         print(f"#{i + 1:02d} embed {emb_ms:5d} ms · 首 token {res.ttft_ms or 0:6d} ms（其中加载 {res.load_ms or 0} ms）"

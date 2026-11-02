@@ -37,7 +37,7 @@ def test_uses_task_default_model_and_options():
     call = fake.chat_calls[0]
     assert call["model"] == "fake-chat"
     assert call["opts"].num_ctx == 8192 and call["opts"].think is False
-    assert call["opts"].temperature == 0.3 and call["opts"].max_tokens == 1024
+    assert call["opts"].temperature == 0.3 and call["opts"].max_tokens == 512
     e = log.entries[-1]
     assert (e.task, e.provider, e.model, e.error) == ("knowledge_qa", "test", "fake-chat", None)
     assert e.mem_available_mb == 1234 and e.output_tokens is not None

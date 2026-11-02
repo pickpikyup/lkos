@@ -19,10 +19,11 @@ class QAService:
         self.gateway = gateway
 
     def ask(self, question: str, k: int | None = None, model_override: str | None = None,
-            lang: str | None = "auto", on_token: TokenCallback | None = None) -> Answer:
+            lang: str | None = "auto", on_token: TokenCallback | None = None,
+            mode: str | None = None) -> Answer:
         question = question.strip()
         qlang = detect_lang(question)
-        hits = self.retriever.search(question, k=k, lang=lang)
+        hits = self.retriever.search(question, k=k, lang=lang, mode=mode)
         if not hits:
             return Answer(text=NO_CONTEXT_MESSAGE[lang_key(qlang)], no_context=True)
 

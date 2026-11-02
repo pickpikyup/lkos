@@ -29,12 +29,33 @@ def app(tmp_path, corpus):
     a.close()
 
 
-def test_chinese_question_finds_budget_and_only_chinese_chunks(app):
+def test_chinese_question_soft_mode_prefers_chinese(app):
     hits = app.retriever.search("项目二期的预算上限是多少？", k=5)
     assert hits[0].file_name in ("项目计划书.docx", "评审会议纪要.pdf")
     assert any("一百二十万" in h.text for h in hits)
-    assert {h.lang for h in hits} == {"zh"}
-    assert app.retriever.last_debug.lang_filter == "zh"
+    dbg = app.retriever.last_debug
+    assert dbg.mode == "soft" and dbg.lang_filter is None and dbg.boosted
+    assert hits[0].lang == "zh"
+
+
+def test_strict_mode_returns_only_question_language(app):
+    hits = app.retriever.search("项目二期的预算上限是多少？", k=5, mode="strict")
+    assert {h.lang for h in hits} == {"zh"} and app.retriever.last_debug.lang_filter == "zh"
+
+
+def test_soft_boost_reorders_equal_candidates(app):
+    """soft 模式只是加权：同一批候选里，同语言的块排名上升，其他语言的块仍在结果中。"""
+    soft = app.retriever.search("budget 预算", k=20, mode="soft")
+    plain = app.retriever.search("budget 预算", k=20, mode="all")
+    assert {h.chunk_id for h in soft} == {h.chunk_id for h in plain}
+    assert len({h.lang for h in soft}) > 1
+
+
+def test_unknown_mode_rejected(app):
+    from lkos.errors import ConfigError
+
+    with pytest.raises(ConfigError):
+        app.retriever.search("x", mode="fuzzy")
 
 
 def test_two_character_keyword_hits_via_fts(app):
@@ -46,9 +67,9 @@ def test_two_character_keyword_hits_via_fts(app):
 
 def test_english_and_french_questions(app):
     en = app.retriever.search("What is the retention policy for logs?", k=3)
-    assert en[0].file_name == "security-policy.md" and {h.lang for h in en} == {"en"}
+    assert en[0].file_name == "security-policy.md" and en[0].lang == "en"
     fr = app.retriever.search("Où se trouve la machine à café ?", k=3)
-    assert fr[0].file_name == "guide-accueil.md" and {h.lang for h in fr} == {"fr"}
+    assert fr[0].file_name == "guide-accueil.md" and fr[0].lang == "fr"
 
 
 def test_lang_all_disables_filter(app):
