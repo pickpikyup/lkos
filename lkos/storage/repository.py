@@ -68,6 +68,29 @@ class Repository:
         )
         return int(cur.lastrowid)
 
+    def list_sources(self) -> list[dict]:
+        """来源文件夹及其文件数、文本块数、最近一次索引时间。"""
+        rows = self.conn.execute(
+            """SELECT s.id, s.path,
+                      (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id) AS files,
+                      (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id AND f.status = 'failed') AS failed,
+                      (SELECT COUNT(*) FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.source_id = s.id) AS chunks,
+                      (SELECT MAX(r.finished_at) FROM index_runs r WHERE r.source_id = s.id AND r.aborted = 0) AS last_indexed
+               FROM sources s ORDER BY s.id""").fetchall()
+        return [dict(r) for r in rows]
+
+    def remove_source(self, source_id: int) -> int:
+        """删除来源文件夹及其全部索引（不动原文件），返回删除的文件数。"""
+        ids = [f.id for f in self.files_of_source(source_id)]
+        self.remove_files(ids)
+        with self.transaction():
+            self.conn.execute("DELETE FROM index_runs WHERE source_id = ?", (source_id,))
+            self.conn.execute("DELETE FROM index_meta WHERE key IN (?, ?)",
+                              (f"chunker:{source_id}", f"rechunk:{source_id}"))
+            self.conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+        self.prune_vectors()
+        return len(ids)
+
     # ---------- 文件 ----------
     @staticmethod
     def _file(row: sqlite3.Row) -> FileRecord:

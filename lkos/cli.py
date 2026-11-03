@@ -16,8 +16,10 @@ from lkos.config import default_home
 from lkos.errors import LkosError
 from lkos.types import Answer, ProgressEvent
 
-app = typer.Typer(add_completion=False, no_args_is_help=True,
-                  help="Local Knowledge OS（POC）：本地知识库索引、检索与问答。")
+app = typer.Typer(add_completion=False, no_args_is_help=False,
+                  help="Local Knowledge OS：本地知识库索引、检索与问答。不带参数运行进入交互式问答。")
+source_app = typer.Typer(add_completion=False, no_args_is_help=True, help="管理要检索的文件夹。")
+app.add_typer(source_app, name="source")
 console = Console()
 err = Console(stderr=True)
 
@@ -31,8 +33,9 @@ class State:
 state = State()
 
 
-@app.callback()
+@app.callback(invoke_without_command=True)
 def _global(
+    ctx: typer.Context,
     home: Optional[Path] = typer.Option(None, "--home", envvar="LKOS_HOME",
                                         help="数据目录（数据库、配置、缓存）。默认为项目目录下的 data/。"),
     config: Optional[Path] = typer.Option(None, "--config", help="配置文件路径，默认 <home>/config.yaml。"),
@@ -41,6 +44,102 @@ def _global(
     console, err = Console(), Console(stderr=True)  # 每次调用重新读取终端宽度等环境
     state.home = home
     state.config = config
+    if ctx.invoked_subcommand is None:
+        shell()
+
+
+def shell() -> None:
+    """交互式问答（不带参数运行 lkos 时进入）。"""
+    from lkos.shell import Shell
+
+    try:
+        a = open_app()
+    except LkosError as e:
+        fail(e)
+    try:
+        Shell(a, console, err).run()
+    finally:
+        a.close()
+    raise typer.Exit()
+
+
+# ---------------- source / update ----------------
+@source_app.command("add")
+def source_add(folder: Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True,
+                                             help="要检索的文件夹")):
+    """添加文件夹并立即建索引（Ctrl-C 可停下，之后 lkos update 继续）。"""
+    index(folder=folder, limit=None, when_idle=False)
+
+
+@source_app.command("list")
+def source_list():
+    """列出已添加的文件夹。"""
+    try:
+        a = open_app()
+    except LkosError as e:
+        fail(e)
+    rows = a.repo.list_sources()
+    a.close()
+    if not rows:
+        console.print("还没有添加文件夹：lkos source add <文件夹>")
+        return
+    table = Table("编号", "文件夹", "文件", "文本块", "失败", "最近更新（UTC）")
+    for i, r in enumerate(rows, start=1):
+        table.add_row(str(i), r["path"], str(r["files"]), str(r["chunks"]), str(r["failed"]),
+                      (r["last_indexed"] or "从未完成")[:16].replace("T", " "))
+    console.print(table)
+
+
+@source_app.command("remove")
+def source_remove(number: int = typer.Argument(..., min=1, help="编号（见 lkos source list）"),
+                  yes: bool = typer.Option(False, "--yes", "-y", help="不再确认")):
+    """移除文件夹及其索引（不会删除原文件）。"""
+    try:
+        a = open_app()
+    except LkosError as e:
+        fail(e)
+    rows = a.repo.list_sources()
+    if number > len(rows):
+        a.close()
+        err.print(f"没有编号 {number}，共 {len(rows)} 个文件夹。")
+        raise typer.Exit(code=1)
+    r = rows[number - 1]
+    if not yes and not typer.confirm(f"移除 {r['path']} 的索引？原文件不受影响"):
+        a.close()
+        raise typer.Exit()
+    n = a.repo.remove_source(r["id"])
+    a.close()
+    console.print(f"已移除 {r['path']}，删除了 {n} 个文件的索引。")
+
+
+@app.command()
+def update(when_idle: bool = typer.Option(False, "--when-idle", help="闲时索引：问答、用电池、使用电脑时暂停")):
+    """更新所有已添加文件夹的索引（只处理新增、修改、删除的文件）。"""
+    try:
+        a = open_app()
+    except LkosError as e:
+        fail(e)
+    rows = a.repo.list_sources()
+    if not rows:
+        a.close()
+        console.print("还没有添加文件夹：lkos source add <文件夹>")
+        return
+    try:
+        for r in rows:
+            folder = Path(r["path"])
+            if not folder.is_dir():
+                console.print(f"[yellow]跳过（找不到文件夹）：{folder}[/]")
+                continue
+            console.print(f"[bold]{folder}[/]")
+            rep, gate = run_index(a, folder, when_idle=when_idle)
+            print_index_report(rep, gate, brief=True)
+    except KeyboardInterrupt:
+        err.print("已中断。已完成的文件已保存，重新运行即可续传。")
+        raise typer.Exit(code=130)
+    except LkosError as e:
+        fail(e)
+    finally:
+        a.close()
 
 
 def open_app() -> App:
@@ -95,34 +194,12 @@ def index(
                                    help="闲时索引：正在问答、使用电池、或你在用电脑时自动暂停，条件满足后继续"),
 ):
     """索引文件夹（增量：未变化的文件跳过，改名的文件不重新计算 Embedding；最近修改的文件优先）。"""
-    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
-
     try:
         a = open_app()
     except LkosError as e:
         fail(e)
-    total = sum(1 for _ in a.indexer.walk(folder.resolve()))
-    if limit:
-        total = min(total, limit)
-    labels = {"indexed": "已索引", "unchanged": "未变化", "moved": "已移动", "skipped": "已跳过", "failed": "失败"}
     try:
-        with Progress(TextColumn("{task.description}"), BarColumn(), MofNCompleteColumn(), TimeElapsedColumn(),
-                      console=console, transient=True) as progress:
-            task = progress.add_task("索引中", total=total)
-
-            def on_progress(ev: ProgressEvent) -> None:
-                progress.update(task, completed=ev.files_seen,
-                                description=f"{labels.get(ev.action, ev.action)} {Path(ev.path).name[:40]}")
-
-            gate = None
-            if when_idle:
-                from lkos.indexing.scheduler import REASONS
-
-                def on_pause(reason: str) -> None:
-                    progress.console.print(f"[dim]{time.strftime('%H:%M:%S')}[/] {REASONS[reason]}")
-
-                gate = a.index_gate(on_pause=on_pause)
-            rep = a.indexer.index_folder(folder, limit=limit, on_progress=on_progress, gate=gate)
+        rep, gate = run_index(a, folder, limit=limit, when_idle=when_idle)
     except KeyboardInterrupt:
         err.print("已中断。已完成的文件已保存，重新运行即可续传。")
         raise typer.Exit(code=130)
@@ -130,27 +207,66 @@ def index(
         fail(e)
     finally:
         a.close()
+    print_index_report(rep, gate)
 
-    table = Table("项目", "数量", show_header=False)
-    for label, value in [("扫描文件", rep.files_seen), ("新索引", rep.files_indexed), ("未变化/跳过", rep.files_skipped),
-                         ("改名/移动", rep.files_moved), ("失败", rep.files_failed), ("已删除", rep.files_removed),
-                         ("新增文本块", rep.chunks_added), ("其中复用缓存向量", rep.chunks_reused),
-                         ("清理无用向量", rep.vectors_pruned), ("耗时（秒）", rep.seconds),
-                         ("　解析（秒）", rep.parse_seconds), ("　计算向量（秒）", rep.embed_seconds)]:
-        table.add_row(label, str(value))
-    console.print(table)
-    if when_idle and gate is not None:
-        p = gate.pauses
-        console.print(f"闲时索引：暂停共 {gate.paused_seconds:.0f} 秒（问答 {p['qa']} 次 · 用户使用电脑 {p['busy']} 次 · "
-                      f"使用电池 {p['battery']} 次）")
-    if rep.files_indexed and rep.seconds:
-        console.print(f"吞吐：{rep.files_indexed / rep.seconds:.2f} 文件/秒，{rep.chunks_added / rep.seconds:.1f} 文本块/秒")
+
+def run_index(a: App, folder: Path, limit: Optional[int] = None, when_idle: bool = False):
+    """带进度条地索引一个文件夹，返回 (IndexReport, 闲时闸门或 None)。Ctrl-C 与错误交给调用方处理。"""
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+
+    folder = Path(folder).expanduser().resolve()
+    total = sum(1 for _ in a.indexer.walk(folder))
+    if limit:
+        total = min(total, limit)
+    labels = {"indexed": "已索引", "unchanged": "未变化", "moved": "已移动", "skipped": "已跳过", "failed": "失败"}
+    with Progress(TextColumn("{task.description}"), BarColumn(), MofNCompleteColumn(), TimeElapsedColumn(),
+                  console=console, transient=True) as progress:
+        task = progress.add_task("索引中", total=total)
+
+        def on_progress(ev: ProgressEvent) -> None:
+            progress.update(task, completed=ev.files_seen,
+                            description=f"{labels.get(ev.action, ev.action)} {Path(ev.path).name[:40]}")
+
+        gate = None
+        if when_idle:
+            from lkos.indexing.scheduler import REASONS
+
+            def on_pause(reason: str) -> None:
+                progress.console.print(f"[dim]{time.strftime('%H:%M:%S')}[/] {REASONS[reason]}")
+
+            gate = a.index_gate(on_pause=on_pause)
+        rep = a.indexer.index_folder(folder, limit=limit, on_progress=on_progress, gate=gate)
+    return rep, gate
+
+
+def print_index_report(rep, gate=None, brief: bool = False) -> None:
+    if brief:
+        console.print(f"扫描 {rep.files_seen} 个文件：新索引 {rep.files_indexed} · 未变化/跳过 {rep.files_skipped} · "
+                      f"改名 {rep.files_moved} · 失败 {rep.files_failed} · 已删除 {rep.files_removed} · "
+                      f"新增文本块 {rep.chunks_added} · 用时 {rep.seconds:.0f} 秒")
+    else:
+        table = Table("项目", "数量", show_header=False)
+        for label, value in [("扫描文件", rep.files_seen), ("新索引", rep.files_indexed),
+                             ("未变化/跳过", rep.files_skipped),
+                             ("改名/移动", rep.files_moved), ("失败", rep.files_failed), ("已删除", rep.files_removed),
+                             ("新增文本块", rep.chunks_added), ("其中复用缓存向量", rep.chunks_reused),
+                             ("清理无用向量", rep.vectors_pruned), ("耗时（秒）", rep.seconds),
+                             ("　解析（秒）", rep.parse_seconds), ("　计算向量（秒）", rep.embed_seconds)]:
+            table.add_row(label, str(value))
+        console.print(table)
+        if gate is not None:
+            p = gate.pauses
+            console.print(f"闲时索引：暂停共 {gate.paused_seconds:.0f} 秒（问答 {p['qa']} 次 · 用户使用电脑 {p['busy']} 次 · "
+                          f"使用电池 {p['battery']} 次）")
+        if rep.files_indexed and rep.seconds:
+            console.print(f"吞吐：{rep.files_indexed / rep.seconds:.2f} 文件/秒，"
+                          f"{rep.chunks_added / rep.seconds:.1f} 文本块/秒")
     if rep.rechunked:
         console.print("[yellow]切块参数已变化，本次重新切块了这个文件夹的所有文件（未改动文本的向量已复用）。[/]")
     if not rep.cleanup_done:
         console.print("[yellow]使用了 --limit，本次未清理已删除的文件。[/]")
     for path, reason in rep.failures[:10]:
-        err.print(f"[red]失败[/] {path}：{reason}")
+        err.print(f"[red]失败[/] {path}：{reason}", highlight=False)
 
 
 # ---------------- search ----------------

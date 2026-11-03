@@ -278,3 +278,19 @@ def test_index_when_idle(cli, corpus):
     """闲时模式：在测试环境里（非 macOS，视为已接电源且空闲）不应暂停，正常完成并汇报暂停统计。"""
     out = cli("index", str(corpus), "--when-idle")
     assert _row(out, "新索引") == "4" and "闲时索引：暂停共 0 秒" in out
+
+
+def test_source_commands_and_update(cli, corpus):
+    out = cli("source", "list")
+    assert "还没有添加文件夹" in out
+    out = cli("source", "add", str(corpus))
+    assert _row(out, "新索引") == "4"
+    out = cli("source", "list")
+    assert str(corpus) in out and "4" in out
+    (corpus / "新文件.md").write_text("# 新文件\n\n年会在三楼举办。\n", encoding="utf-8")
+    out = cli("update")
+    assert "新索引 1" in out
+    out = cli("source", "remove", "1", "--yes")
+    assert "删除了 5 个文件的索引" in out
+    assert "还没有添加文件夹" in cli("source", "list")
+    assert "还没有添加文件夹" in cli("update")

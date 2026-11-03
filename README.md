@@ -1,8 +1,49 @@
-# Local Knowledge OS · POC（命令行版）
+# Local Knowledge OS（命令行版）
 
-本地知识库 POC：索引一个文件夹里的 PDF、DOCX、Markdown，用 Ollama 上的 Qwen3 4B 回答问题，每个回答都附带文件名和页码、标题路径或行号形式的引用。
+本地离线知识库：索引你的 PDF、Word（DOCX）、Markdown，用 Ollama 上的 Qwen3 4B 回答问题，
+每个回答都附带文件名和页码、标题路径或行号形式的出处。文档内容不会离开这台电脑。
 
-设计依据见《Local Knowledge OS 需求文档》和《Local Knowledge OS POC 设计文档》。
+## 马上使用
+
+前提：已经运行过 `scripts/setup_mac.sh`（建环境、下载模型），并且 Ollama 应用开着。
+
+**双击 `LKOS.command`**，或在终端运行 `bin/lkos`，进入问答界面：
+
+```
+问> /add ~/Documents/工作资料          ← 添加文件夹并建索引（可以把文件夹拖进窗口）
+问> 部署 DeepSeek V3 最少需要几台 Atlas 800I A2？
+最小配置为 4 台 Atlas 800I A2（8×64GB）[1]。
+
+出处
+  [1] 昇腾和DeepSeek适配情况内部沟通FAQ.docx · DeepSeek在昇腾上推理部署的方案 · 段落 86–95
+问> /open 1                             ← 打开原文件
+问> /s vCPU 分配率                      ← 只搜索，不生成回答
+问> /update                             ← 文件有增删改后更新索引
+问> /help                               ← 全部命令
+```
+
+想在任何目录直接输入 `lkos`，把这行加入 `~/.zshrc`，然后重新打开终端：
+
+```bash
+alias lkos='"<项目文件夹>/bin/lkos"'
+```
+
+不进入问答界面也可以直接用命令：
+
+```bash
+lkos ask "问题"                 # 单次问答
+lkos search "关键词"            # 只搜索
+lkos source add <文件夹>        # 添加文件夹并建索引
+lkos source list                # 已添加的文件夹
+lkos source remove <编号>       # 移除文件夹的索引（不删原文件）
+lkos update                     # 更新所有文件夹的索引
+lkos status --failed            # 索引规模；列出没能索引的文件
+```
+
+第一次索引大量文档需要较长时间（约每秒 10 个文本块），可以随时 Ctrl-C 停下，下次 `/update` 接着做。
+目前支持 PDF、DOCX、Markdown；扫描件（没有文字层的 PDF）、加密文件、旧版 .doc / .ppt 会被跳过。
+
+设计依据见《Local Knowledge OS 需求文档》《完整设计文档 v1.0》与 `docs/m1-design.md`。
 
 ## 一、在 Mac 上运行
 
