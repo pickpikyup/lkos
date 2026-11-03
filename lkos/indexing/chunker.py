@@ -156,11 +156,20 @@ class Chunker:
         return segs
 
     def chunk(self, blocks: Iterable[Block]) -> list[Chunk]:
-        raw: list[tuple[str, Location]] = []
+        raw: list[tuple[str, Location, str]] = []
         for seg in self._segments(blocks):
             max_chars, overlap = self.limits_for("\n".join(b.text for b in seg))
-            raw.extend(_pack(seg, max_chars, overlap))
-        return [Chunk(ordinal=i, text=t, lang=self.detect(t), location=loc) for i, (t, loc) in enumerate(raw)]
+            for text, loc in _pack(seg, max_chars, overlap):
+                lang = self.detect(text)
+                limit = self.by_lang.get(lang, self.by_lang["other"]) if self.by_lang else max_chars
+                if len(text) > limit:
+                    # 中英混排的页按多数语言（英文）切出的块，可能以中文为主：按该块自己的语言再切一次，
+                    # 否则中文片段会长到 1,200 字，token 数翻倍
+                    for piece in split_sentences(text, limit):
+                        raw.append((piece, loc, self.detect(piece)))
+                else:
+                    raw.append((text, loc, lang))
+        return [Chunk(ordinal=i, text=t, lang=lang, location=loc) for i, (t, loc, lang) in enumerate(raw)]
 
 
 def _pack(blocks: list[Block], max_chars: int, overlap_chars: int) -> list[tuple[str, Location]]:

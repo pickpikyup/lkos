@@ -151,3 +151,13 @@ def test_signature_reflects_parameters():
 def test_by_lang_validation(kw):
     with pytest.raises(ValueError):
         Chunker(**kw)
+
+
+def test_chinese_chunk_in_english_majority_segment_is_resplit():
+    """同一页英文多、中文少：整段按英文长度切，但以中文为主的块要再按中文长度切开。"""
+    en = " ".join(["The budget cap for phase two is one point two million dollars in total."] * 4)
+    zh = "二期预算上限为一百二十万元，其中硬件采购不超过四十万元。" * 4
+    ch = by_lang().chunk([blk(en, page=1), blk(zh, page=1), blk(en, page=1)])
+    assert all(len(c.text) <= 50 for c in ch if c.lang == "zh")
+    assert all(len(c.text) <= 120 for c in ch)
+    assert any(c.lang == "zh" for c in ch) and [c.ordinal for c in ch] == list(range(len(ch)))
