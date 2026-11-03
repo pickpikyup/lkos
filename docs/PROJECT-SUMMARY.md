@@ -24,9 +24,10 @@
 
 ## 下一步（设计文档第 14 节）
 
-M1 检索与速度收尾（块级评测 60 题、先选文档再选段、中文切块约 500 字）→ M2 后台服务（schema v3、任务队列、`lkos serve`、HTTP API、定时补跑、launchd）→ M3 格式扩展（PPTX、DOC/PPT 转换、Vision OCR）→ M4 Web 界面与任务 → M5 正式索引与验收。
+M1 检索与速度收尾（块级评测 60 题、先选文档再选段、中文切块约 500 字）→ M2 后台 daemon（schema v3、任务表、`lkos daemon`、每周定时与补跑、launchd）→ M3 格式扩展（PPTX、DOC 转换、PPT 跳过并提示、Vision OCR）→ M4 任务与命令行体验（总结、提取、分析、标签、历史、`lkos open`、`doctor`）→ M5 正式索引与验收。
 
-待用户决定：界面形式（假设本地 Web）、正式版数据目录位置、第一批来源文件夹、是否装 LibreOffice。
+已定（2026-11-03）：只用命令行（问答在 CLI 进程里跑，`lkos daemon` 常驻只做索引，两者通过 `data/qa.active` 与任务表协调，不提供 HTTP API / 网页）；数据继续放在项目内 `data/`；刷新周期默认每周；不装 LibreOffice（PPT 旧格式跳过并提示）。
+待定：第一批正式索引的来源文件夹（M5 前确认）。
 
 ## 工作约定
 
