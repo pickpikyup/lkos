@@ -46,3 +46,28 @@ def test_shell_session(tmp_path, corpus, monkeypatch):
     assert "security-policy.md" in out
     assert "4 个文件" in out and "新索引 0" in out and "就绪" in out
     assert "没有这个命令" in out and "已移除，删除了 4 个文件的索引" in out
+
+
+def test_old_index_is_backed_up_and_folders_kept(tmp_path, corpus, monkeypatch):
+    import sqlite3
+
+    from lkos.cli import app as cli_app
+    home = tmp_path / "h"
+    home.mkdir()
+    old = sqlite3.connect(home / "lkos.db")
+    old.executescript("CREATE TABLE index_meta(key TEXT PRIMARY KEY, value TEXT);"
+                      "INSERT INTO index_meta VALUES ('schema_version', '1');"
+                      "CREATE TABLE sources(id INTEGER PRIMARY KEY, path TEXT);")
+    old.execute("INSERT INTO sources(path) VALUES (?)", (str(corpus),))
+    old.commit()
+    old.close()
+    from tests.functional.test_cli import write_config
+
+    write_config(home)
+    monkeypatch.setenv("LKOS_HOME", str(home))
+    res = CliRunner().invoke(cli_app, ["source", "list"])
+    assert res.exit_code == 0, res.output
+    assert "旧索引已备份为" in res.output and "lkos.db.old-" in res.output
+    assert list(home.glob("lkos.db.old-*"))
+    res = CliRunner().invoke(cli_app, ["update"])
+    assert "新索引 4" in res.output

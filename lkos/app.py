@@ -58,6 +58,31 @@ class App:
         return IndexGate(GateConfig(i.idle_seconds, i.require_ac_power, i.poll_seconds), self.marker,
                          on_pause=on_pause, **probes)
 
+    @staticmethod
+    def retire_old_index(home: Path | None = None) -> tuple[Path, list[str]]:
+        """旧版本格式的索引无法继续使用：改名备份（不删除），返回 (备份路径, 原来的来源文件夹)。"""
+        import sqlite3
+        import time
+
+        home = Path(home).expanduser().resolve() if home else default_home()
+        db = home / DB_NAME
+        sources: list[str] = []
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                sources = [r[0] for r in conn.execute("SELECT path FROM sources ORDER BY id")]
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            pass
+        backup = home / f"{DB_NAME}.old-{time.strftime('%Y%m%d-%H%M%S')}"
+        db.rename(backup)
+        for suffix in ("-wal", "-shm"):
+            side = home / (DB_NAME + suffix)
+            if side.exists():
+                side.rename(home / (backup.name + suffix))
+        return backup, sources
+
     @property
     def db_path(self) -> Path:
         return self.home / DB_NAME

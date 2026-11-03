@@ -143,7 +143,19 @@ def update(when_idle: bool = typer.Option(False, "--when-idle", help="闲时索�
 
 
 def open_app() -> App:
-    state.app = App.open(home=state.home, config_path=state.config)
+    from lkos.errors import SchemaVersionError
+
+    try:
+        state.app = App.open(home=state.home, config_path=state.config)
+    except SchemaVersionError as e:
+        # 旧版本建的索引：自动改名备份并换成新格式，保留原来添加的文件夹，之后 update 重建
+        backup, sources = App.retire_old_index(state.home)
+        err.print(f"[yellow]{str(e).split('。')[0]}。旧索引已备份为 {backup.name}，已换成新格式。[/]")
+        state.app = App.open(home=state.home, config_path=state.config)
+        for path in sources:
+            state.app.repo.upsert_source(path)
+        if sources:
+            err.print(f"[yellow]已保留原来的 {len(sources)} 个文件夹，运行 /update（或 lkos update）重新建索引。[/]")
     return state.app
 
 
