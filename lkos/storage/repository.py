@@ -18,8 +18,9 @@ from lkos.storage.vectors import text_hash, to_int8
 from lkos.types import CallLog, Chunk, FileInfo, FileRecord, Location, RetrievedChunk
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+def now_iso(precise: bool = False) -> str:
+    """precise=True 时精确到微秒（files.indexed_at：重新切块续跑时据此判断文件是否已处理）。"""
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds" if precise else "seconds")
 
 
 @dataclass
@@ -74,6 +75,7 @@ class Repository:
             id=row["id"], source_id=row["source_id"], path=row["path"], file_type=row["file_type"],
             content_hash=row["content_hash"], status=row["status"], error=row["error"],
             chunk_count=row["chunk_count"], size_bytes=row["size_bytes"], mtime=row["mtime"],
+            indexed_at=row["indexed_at"],
         )
 
     def get_file(self, path: str) -> FileRecord | None:
@@ -97,6 +99,17 @@ class Repository:
             (new_path, source_id, mtime, file_id),
         )
 
+    # ---------- 元数据 ----------
+    def get_meta(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT value FROM index_meta WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO index_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
     def touch_file(self, file_id: int, mtime: float) -> None:
         self.conn.execute("UPDATE files SET mtime = ? WHERE id = ?", (mtime, file_id))
 
@@ -111,7 +124,7 @@ class Repository:
                  mtime = excluded.mtime, status = excluded.status, error = excluded.error,
                  chunk_count = excluded.chunk_count, indexed_at = excluded.indexed_at""",
             (source_id, self.owner_id, info.path, info.file_type, info.content_hash, info.size_bytes,
-             info.mtime, status, error, chunk_count, now_iso()),
+             info.mtime, status, error, chunk_count, now_iso(precise=True)),
         )
         return int(self.conn.execute("SELECT id FROM files WHERE path = ?", (info.path,)).fetchone()["id"])
 
@@ -272,13 +285,38 @@ class Repository:
             r = by_id.get(cid)
             if r is None:
                 continue
-            out.append(RetrievedChunk(
-                chunk_id=r["id"], file_path=r["file_path"], file_type=r["file_type"], text=r["text"],
-                lang=r["lang"],
-                location=Location(page=r["page"], heading_path=r["heading_path"], para_start=r["para_start"],
-                                  para_end=r["para_end"], line_start=r["line_start"], line_end=r["line_end"]),
-            ))
+            out.append(self._retrieved(r))
         return out
+
+    @staticmethod
+    def _retrieved(r: sqlite3.Row) -> RetrievedChunk:
+        return RetrievedChunk(
+            chunk_id=r["id"], file_path=r["file_path"], file_type=r["file_type"], text=r["text"],
+            lang=r["lang"], file_id=r["file_id"], ordinal=r["ordinal"], ordinal_end=r["ordinal"],
+            location=Location(page=r["page"], heading_path=r["heading_path"], para_start=r["para_start"],
+                              para_end=r["para_end"], line_start=r["line_start"], line_end=r["line_end"]),
+        )
+
+    def neighbors(self, file_id: int, ordinals: Sequence[int]) -> list[RetrievedChunk]:
+        """按文件内序号取文本块（补入相邻片段用），按序号排序返回。"""
+        if not ordinals:
+            return []
+        marks = ",".join("?" * len(ordinals))
+        rows = self.conn.execute(
+            f"""SELECT c.*, f.path AS file_path, f.file_type AS file_type
+                FROM chunks c JOIN files f ON f.id = c.file_id
+                WHERE c.file_id = ? AND c.ordinal IN ({marks}) ORDER BY c.ordinal""",
+            [file_id, *ordinals],
+        ).fetchall()
+        return [self._retrieved(r) for r in rows]
+
+    def files_of_chunks(self, chunk_ids: Sequence[int]) -> dict[int, int]:
+        """chunk_id → file_id（文档排序用）。"""
+        if not chunk_ids:
+            return {}
+        marks = ",".join("?" * len(chunk_ids))
+        rows = self.conn.execute(f"SELECT id, file_id FROM chunks WHERE id IN ({marks})", list(chunk_ids)).fetchall()
+        return {r["id"]: r["file_id"] for r in rows}
 
     # ---------- 索引运行 ----------
     def start_run(self, source_id: int) -> IndexRun:

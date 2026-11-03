@@ -93,7 +93,7 @@ def test_config_language_filter_all(tmp_path, corpus):
 
 
 def test_scores_descending_and_k_respected(app):
-    hits = app.retriever.search("预算", k=2)
+    hits = app.retriever.search("预算", k=2, strategy="flat")
     assert len(hits) == 2 and hits[0].score >= hits[1].score
 
 

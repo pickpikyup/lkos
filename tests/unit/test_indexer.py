@@ -177,3 +177,72 @@ def test_chunks_carry_locations(app, corpus):
             assert r["para_start"] and r["heading_path"].startswith("第三章 预算")
         else:
             assert r["line_start"] and r["heading_path"]
+
+
+# ---------- 切块参数变化后重新切块（M1） ----------
+def _open(home, fake, **indexing):
+    return App.open(home=home, overrides=fake_overrides(indexing=indexing), providers={"test": fake})
+
+
+def test_chunker_change_rechunks_unchanged_files_and_records_signature(tmp_path, corpus, fake):
+    home = tmp_path / "home"
+    a = _open(home, fake, chunk_max_chars=800)
+    first = a.indexer.index_folder(corpus)
+    assert not first.rechunked and a.repo.get_meta("chunker:1") == "all800-ov100c-d2"
+    assert a.indexer.index_folder(corpus).files_indexed == 0
+    a.close()
+
+    b = _open(home, fake, chunk_chars_zh=60, chunk_chars_other=150)
+    rep = b.indexer.index_folder(corpus)
+    assert rep.rechunked and rep.files_indexed == 4   # 文件没变，但切块参数变了
+    assert b.repo.get_meta("chunker:1") == "other150-zh60-ov0.15-d2"
+    assert b.repo.get_meta("rechunk:1") is None
+    zh_len = b.repo.conn.execute("SELECT MAX(LENGTH(text)) FROM chunks WHERE lang = 'zh'").fetchone()[0]
+    assert zh_len <= 60
+    again = b.indexer.index_folder(corpus)
+    assert not again.rechunked and again.files_indexed == 0
+    b.close()
+
+
+def test_interrupted_rechunk_resumes_without_redoing_finished_files(tmp_path, corpus):
+    home = tmp_path / "home"
+    good = FakeProvider("test", dim=TEST_DIM)
+    a = _open(home, good, chunk_max_chars=800)
+    a.indexer.index_folder(corpus)
+    a.close()
+
+    class FlakyProvider(FakeProvider):
+        calls = 0
+
+        def embed(self, model, texts):
+            FlakyProvider.calls += 1
+            if FlakyProvider.calls > 2:
+                raise ModelUnavailableError("Ollama 挂了")
+            return super().embed(model, texts)
+
+    b = _open(home, FlakyProvider("test", dim=TEST_DIM), chunk_chars_zh=50, chunk_chars_other=50, chunk_overlap_ratio=0.3)
+    with pytest.raises(ModelUnavailableError):
+        b.indexer.index_folder(corpus)
+    assert b.repo.get_meta("chunker:1") == "all800-ov100c-d2"   # 中断：签名不更新
+    assert b.repo.get_meta("rechunk:1").startswith("other50-zh50-ov0.3-d2@")
+    b.close()
+
+    c = _open(home, good, chunk_chars_zh=50, chunk_chars_other=50, chunk_overlap_ratio=0.3)
+    rep = c.indexer.index_folder(corpus)
+    assert rep.rechunked and 0 < rep.files_indexed < 4 and rep.files_indexed + rep.files_skipped == 4
+    assert c.repo.get_meta("chunker:1") == "other50-zh50-ov0.3-d2"
+    c.close()
+
+
+def test_limit_run_does_not_finish_rechunk(tmp_path, corpus, fake):
+    home = tmp_path / "home"
+    a = _open(home, fake, chunk_max_chars=800)
+    a.indexer.index_folder(corpus)
+    a.close()
+    b = _open(home, fake)
+    rep = b.indexer.index_folder(corpus, limit=2)
+    assert rep.rechunked and b.repo.get_meta("chunker:1") == "all800-ov100c-d2"
+    rest = b.indexer.index_folder(corpus)
+    assert rest.rechunked and rest.files_indexed == 2
+    assert b.repo.get_meta("chunker:1") == "other1200-zh500-ov0.15-d2"
+    b.close()

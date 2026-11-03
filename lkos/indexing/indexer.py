@@ -14,13 +14,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterator
 
-from lkos.config import Config
+from lkos.config import Config, make_chunker
 from lkos.errors import EncryptedFileError, ParseError
 from lkos.indexing.chunker import Chunker
 from lkos.indexing.tokenize import to_fts_tokens
 from lkos.parsers import parse_file, parser_for
 from lkos.storage.vectors import text_hash
-from lkos.storage.repository import IndexRun, Repository
+from lkos.storage.repository import IndexRun, Repository, now_iso
 from lkos.types import FileInfo, ProgressEvent
 
 ProgressCallback = Callable[[ProgressEvent], None]
@@ -43,6 +43,7 @@ class IndexReport:
     vectors_pruned: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     cleanup_done: bool = True
+    rechunked: bool = False   # 切块参数变化，本次重新切块了这个来源的所有文件
 
 
 def sha256_of(path: Path, bufsize: int = 1 << 20) -> str:
@@ -63,7 +64,7 @@ class Indexer:
         self.cfg = cfg
         self.repo = repo
         self.gateway = gateway
-        self.chunker = chunker or Chunker(cfg.indexing.chunk_max_chars, cfg.indexing.chunk_overlap_chars)
+        self.chunker = chunker or make_chunker(cfg.indexing)
 
     # ---------- 遍历 ----------
     def walk(self, folder: Path) -> Iterator[Path]:
@@ -102,6 +103,22 @@ class Indexer:
         if not folder.is_dir():
             raise ParseError(f"文件夹不存在：{folder}")
         source_id = self.repo.upsert_source(norm_path(folder))
+        sig_key, pending_key = f"chunker:{source_id}", f"rechunk:{source_id}"
+        signature = self.chunker.signature()
+        # 切块参数变化（或旧索引没有记录参数）：即使文件没变也重新切块；未改动文本的向量从缓存复用。
+        # 重新切块开始的时间记在 rechunk:<来源>，中断后续跑时，在这之后索引过的文件不再重做。
+        rechunk_since: str | None = None
+        if self.repo.get_meta(sig_key) != signature:
+            if self.repo.files_of_source(source_id):
+                pending = self.repo.get_meta(pending_key) or ""
+                if pending.startswith(signature + "@"):
+                    rechunk_since = pending.split("@", 1)[1]
+                else:
+                    rechunk_since = now_iso(precise=True)
+                    self.repo.set_meta(pending_key, f"{signature}@{rechunk_since}")
+            else:
+                self.repo.set_meta(sig_key, signature)  # 新来源：直接按当前参数切块
+        rechunk = rechunk_since is not None
         run = self.repo.start_run(source_id)
         seen: set[str] = set()
         failures: list[tuple[str, str]] = []
@@ -119,7 +136,7 @@ class Indexer:
                 seen.add(path)
                 if gate is not None:
                     gate.wait()
-                action, detail = self._index_one(p, path, source_id, run, gate)
+                action, detail = self._index_one(p, path, source_id, run, gate, rechunk_since)
                 if action == "failed":
                     failures.append((path, detail or ""))
                 emit(path, action, detail)
@@ -133,6 +150,9 @@ class Indexer:
             self.repo.remove_files(removed)
             run.files_removed = len(removed)
         pruned = self.repo.prune_vectors() if (run.files_indexed or run.files_removed) else 0
+        if rechunk and cleanup:  # 只处理了一部分文件（--limit）时，旧参数切的块还没换完，下次继续
+            self.repo.set_meta(sig_key, signature)
+            self.repo.conn.execute("DELETE FROM index_meta WHERE key = ?", (pending_key,))
         self.repo.finish_run(run)
         return IndexReport(
             run_id=run.id, files_seen=run.files_seen, files_indexed=run.files_indexed,
@@ -140,14 +160,17 @@ class Indexer:
             files_removed=run.files_removed, chunks_added=run.chunks_added,
             seconds=round(time.perf_counter() - t0, 2), failures=failures, cleanup_done=cleanup,
             chunks_reused=run.chunks_reused, parse_seconds=round(run.parse_ms / 1000, 2),
-            embed_seconds=round(run.embed_ms / 1000, 2), vectors_pruned=pruned,
+            embed_seconds=round(run.embed_ms / 1000, 2), vectors_pruned=pruned, rechunked=rechunk,
         )
 
-    def _index_one(self, p: Path, path: str, source_id: int, run: IndexRun, gate=None) -> tuple[str, str | None]:
+    def _index_one(self, p: Path, path: str, source_id: int, run: IndexRun, gate=None,
+                   rechunk_since: str | None = None) -> tuple[str, str | None]:
         parser = parser_for(p, self.cfg.indexing.extensions)
         st = p.stat()
         record = self.repo.get_file(path)
         done = record is not None and record.status in ("indexed", "skipped")
+        if done and rechunk_since and (record.indexed_at or "") < rechunk_since:
+            done = False  # 用旧切块参数索引的文件：重新切块
         # 大小与修改时间都没变时不必重新计算哈希（全量 2–4 GB 时能省下大量读盘）
         if done and record.size_bytes == st.st_size and record.mtime == st.st_mtime:
             run.files_skipped += 1

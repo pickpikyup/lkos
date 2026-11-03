@@ -35,8 +35,11 @@ tasks:
 indexing:
   extensions: [.pdf, .docx, .md]
   max_file_size_mb: 100
-  chunk_max_chars: 800
-  chunk_overlap_chars: 100
+  # 按语言切块：中文约 500 字、英文 / 法文约 1,200 字符，重叠 15%（两种语言的片段 token 数接近）
+  # 修改后各来源会自动重新切块（向量按文本缓存，未改动的文本不重算）
+  chunk_chars_zh: 500
+  chunk_chars_other: 1200
+  chunk_overlap_ratio: 0.15
   skip_hidden: true
   order: recent_first           # 最近修改的文件先索引，常用文档最先可检索
   # 闲时索引（lkos index --when-idle）：问答时、使用电池时、用户在用电脑时暂停
@@ -45,12 +48,17 @@ indexing:
   poll_seconds: 5
 
 retrieval:
-  top_k: 4                      # 4K 上下文下放 4 个 800 字的片段
+  top_k: 4                      # 4K 上下文下放 4 个片段（中文约 500 字 / 片段）
   candidates_per_method: 30
   rrf_k: 60
   language_filter: soft         # soft：同语言加权但不排除 | strict：只检索同语言 | all：不区分
   same_lang_boost: 1.2
   vector_candidates: 200        # 二值粗筛候选数，越大召回越好、越慢
+  strategy: doc_first           # doc_first：先选文档再选段落 | flat：直接取分数最高的块（v0.2）
+  doc_score_top: 3              # 文档得分 = 该文档最好的 3 个块的分数之和
+  per_doc_max: 3                # 同一文档最多送 3 个片段
+  merge_adjacent: true          # 同一文件相邻的片段合并
+  neighbor_ratio: 1.5           # 最佳片段明显领先（≥ 第二名 1.5 倍）时补入前后相邻块；0 = 关闭
 
 privacy:
   remote_enabled: false

@@ -13,12 +13,16 @@ class Location:
     para_end: int | None = None
     line_start: int | None = None  # Markdown 行号，从 1 开始
     line_end: int | None = None
+    page_end: int | None = None   # 相邻片段合并后跨页时的末页
 
     def describe(self, file_type: str) -> str:
         """按格式输出引用定位文字（需求文档第 7 节的粒度）。"""
         parts: list[str] = []
         if file_type == "pdf" and self.page is not None:
-            parts.append(f"第 {self.page} 页")
+            if self.page_end is not None and self.page_end != self.page:
+                parts.append(f"第 {self.page}–{self.page_end} 页")
+            else:
+                parts.append(f"第 {self.page} 页")
         if self.heading_path:
             parts.append(self.heading_path)
         if file_type == "docx" and self.para_start is not None:
@@ -71,6 +75,7 @@ class FileRecord:
     chunk_count: int
     size_bytes: int = 0
     mtime: float = 0.0
+    indexed_at: str | None = None
 
 
 @dataclass
@@ -82,6 +87,9 @@ class RetrievedChunk:
     lang: str
     location: Location
     score: float = 0.0
+    file_id: int | None = None
+    ordinal: int | None = None       # 文件内的块序号
+    ordinal_end: int | None = None   # 相邻片段合并后的末块序号（未合并时等于 ordinal）
 
     @property
     def file_name(self) -> str:

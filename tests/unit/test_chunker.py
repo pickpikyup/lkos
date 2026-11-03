@@ -108,3 +108,46 @@ def test_merge_locations_common_prefix():
     ])
     assert loc == Location(heading_path="A > B", line_start=5, line_end=9)
     assert merge_locations([Location(heading_path="A"), Location()]).heading_path is None
+
+
+# ---------- 按语言切块（M1） ----------
+def by_lang(**kw):
+    return Chunker(max_chars_by_lang={"zh": 50, "other": 120}, overlap_ratio=0.2, **kw)
+
+
+def test_chunk_length_depends_on_segment_language():
+    zh = "。".join(["二期预算上限为一百二十万元"] * 12) + "。"
+    en = " ".join(["The budget cap for phase two is one point two million."] * 8)
+    ch = by_lang().chunk([blk(zh, page=1), blk(en, page=2)])
+    zh_chunks = [c for c in ch if c.location.page == 1]
+    en_chunks = [c for c in ch if c.location.page == 2]
+    assert len(zh_chunks) > 1 and max(len(c.text) for c in zh_chunks) <= 50
+    assert len(en_chunks) > 1 and max(len(c.text) for c in en_chunks) <= 120
+    assert max(len(c.text) for c in en_chunks) > 50  # 英文块明显比中文长
+    assert {c.lang for c in zh_chunks} == {"zh"} and {c.lang for c in en_chunks} == {"en"}
+
+
+def test_overlap_follows_ratio():
+    c = by_lang(lang_detector=fixed_lang)
+    assert c.limits_for("任意") == (50, 10)
+    blocks = [blk("甲" * 30, page=1), blk("乙" * 30, page=1)]
+    ch = c.chunk(blocks)
+    assert ch[1].text.startswith("甲" * 10)  # 第二块以上一块末尾 10 个字（50 × 0.2）开头
+
+
+def test_signature_reflects_parameters():
+    assert by_lang().signature() == "other120-zh50-ov0.2-d2"
+    assert Chunker(800, 100).signature() == "all800-ov100c-d2"
+    assert by_lang().signature() != Chunker(max_chars_by_lang={"zh": 60, "other": 120},
+                                            overlap_ratio=0.2).signature()
+
+
+@pytest.mark.parametrize("kw", [
+    {"max_chars_by_lang": {"zh": 50}, "overlap_ratio": 0.1},
+    {"max_chars_by_lang": {"zh": 50, "other": 100}, "overlap_ratio": 1.0},
+    {"max_chars_by_lang": {"zh": 50, "other": 100}},
+    {"max_chars_by_lang": {"zh": 5, "other": 100}, "overlap_ratio": 0.1},
+])
+def test_by_lang_validation(kw):
+    with pytest.raises(ValueError):
+        Chunker(**kw)

@@ -145,6 +145,8 @@ def index(
                       f"使用电池 {p['battery']} 次）")
     if rep.files_indexed and rep.seconds:
         console.print(f"吞吐：{rep.files_indexed / rep.seconds:.2f} 文件/秒，{rep.chunks_added / rep.seconds:.1f} 文本块/秒")
+    if rep.rechunked:
+        console.print("[yellow]切块参数已变化，本次重新切块了这个文件夹的所有文件（未改动文本的向量已复用）。[/]")
     if not rep.cleanup_done:
         console.print("[yellow]使用了 --limit，本次未清理已删除的文件。[/]")
     for path, reason in rep.failures[:10]:
@@ -158,16 +160,17 @@ def search(
     k: Optional[int] = typer.Option(None, "--k", min=1, max=50, help="返回片段数，默认取配置 retrieval.top_k"),
     lang: str = typer.Option("auto", "--lang", help="auto | zh | en | fr | all"),
     lang_mode: Optional[str] = typer.Option(None, "--lang-mode", help="soft（默认，同语言加权）| strict（只检索同语言）| all"),
+    strategy: Optional[str] = typer.Option(None, "--strategy", help="doc_first（默认，先选文档再选段落）| flat（v0.2 做法）"),
 ):
     """只检索不生成：显示前 k 个片段、分数和位置。"""
     try:
         a = open_app()
-        hits = a.retriever.search(query, k=k, lang=lang, mode=lang_mode)
+        hits = a.retriever.search(query, k=k, lang=lang, mode=lang_mode, strategy=strategy)
         dbg = a.retriever.last_debug
     except LkosError as e:
         fail(e)
     console.print(f"问题语言：{dbg.lang}　模式：{dbg.mode}　过滤：{dbg.lang_filter or '不过滤'}　"
-                  f"关键词：{dbg.fts_query or '（无）'}")
+                  f"策略：{dbg.strategy}　关键词：{dbg.fts_query or '（无）'}")
     if not hits:
         console.print("没有找到相关片段。")
     for i, h in enumerate(hits, start=1):
@@ -214,9 +217,9 @@ def print_answer(ans: Answer, streamed: bool, show_context: bool) -> None:
 
 
 def _ask_once(a: App, question: str, k: int, model: Optional[str], lang: str, show_context: bool,
-              stream: bool, mode: Optional[str] = None) -> None:
+              stream: bool, mode: Optional[str] = None, strategy: Optional[str] = None) -> None:
     on_token = (lambda t: (sys.stdout.write(t), sys.stdout.flush())) if stream else None
-    ans = a.qa.ask(question, k=k, model_override=model, lang=lang, on_token=on_token, mode=mode)
+    ans = a.qa.ask(question, k=k, model_override=model, lang=lang, on_token=on_token, mode=mode, strategy=strategy)
     print_answer(ans, streamed=stream and not ans.no_context, show_context=show_context)
 
 
@@ -229,11 +232,12 @@ def ask(
     lang_mode: Optional[str] = typer.Option(None, "--lang-mode", help="soft（默认，同语言加权）| strict（只检索同语言）| all"),
     show_context: bool = typer.Option(False, "--show-context", help="显示送入模型的片段"),
     stream: bool = typer.Option(True, "--stream/--no-stream", help="流式输出"),
+    strategy: Optional[str] = typer.Option(None, "--strategy", help="doc_first（默认，先选文档再选段落）| flat（v0.2 做法）"),
 ):
     """检索 + 生成：输出带引用的回答。"""
     try:
         a = open_app()
-        _ask_once(a, question, k, model, lang, show_context, stream, lang_mode)
+        _ask_once(a, question, k, model, lang, show_context, stream, lang_mode, strategy)
     except LkosError as e:
         fail(e)
     a.close()
@@ -247,6 +251,7 @@ def chat(
     lang_mode: Optional[str] = typer.Option(None, "--lang-mode", help="soft（默认，同语言加权）| strict（只检索同语言）| all"),
     show_context: bool = typer.Option(False, "--show-context"),
     stream: bool = typer.Option(True, "--stream/--no-stream"),
+    strategy: Optional[str] = typer.Option(None, "--strategy", help="doc_first（默认，先选文档再选段落）| flat（v0.2 做法）"),
 ):
     """交互式连续提问（每轮独立检索，POC 不做多轮记忆）。输入 exit 或 Ctrl-D 退出。"""
     try:
@@ -264,7 +269,7 @@ def chat(
         if q.lower() in ("exit", "quit", ":q"):
             break
         try:
-            _ask_once(a, q, k, model, lang, show_context, stream, lang_mode)
+            _ask_once(a, q, k, model, lang, show_context, stream, lang_mode, strategy)
         except LkosError as e:
             err.print(f"[bold red]错误：[/]{e}")
     a.close()
@@ -324,8 +329,9 @@ def eval_cmd(
     lang_mode: Optional[str] = typer.Option(None, "--lang-mode", help="soft（默认，同语言加权）| strict（只检索同语言）| all"),
     model: Optional[str] = typer.Option(None, "--model", help="本次评测使用的问答模型，如 local/qwen3:1.7b"),
     out: Optional[Path] = typer.Option(None, "--out", help="把每题结果（含回答原文与引用）写入 JSON 文件"),
+    strategy: Optional[str] = typer.Option(None, "--strategy", help="doc_first（默认，先选文档再选段落）| flat（v0.2 做法）"),
 ):
-    """运行测试问题集：输出前 k 命中率、MRR，以及引用有效率。"""
+    """运行测试问题集：文件级命中率、MRR、块级命中率；加 --with-answer 时还有答案正确率、引用率、首 token。"""
     from lkos.evaluation.evaluate import evaluate, load_questions
 
     try:
@@ -333,25 +339,38 @@ def eval_cmd(
         qs = load_questions(questions)
         with console.status("评测中…"):
             rep = evaluate(qs, a.retriever, qa=a.qa if with_answer else None, k=k or a.cfg.retrieval.top_k,
-                           lang=lang, mode=lang_mode, model=model)
+                           lang=lang, mode=lang_mode, model=model, strategy=strategy)
     except LkosError as e:
         fail(e)
-    table = Table("#", "问题", "命中", "名次", "检索到的文件", *(["引用", "无效"] if with_answer else []))
+    def mark(v):
+        return "-" if v is None else ("[green]✓[/]" if v else "[red]✗[/]")
+
+    table = Table("#", "问题", "文件", "名次", "段落", "检索到的文件", *(["答对", "引用", "无效"] if with_answer else []))
     for i, r in enumerate(rep.results, start=1):
-        row = [str(i), r.question[:40], "[green]✓[/]" if r.hit else "[red]✗[/]", str(r.rank or "-"),
+        row = [str(i), r.question[:40], mark(r.hit), str(r.rank or "-"), mark(r.chunk_hit),
                ", ".join(r.retrieved_files[:3]) or (r.error or "-")]
         if with_answer:
-            row += [str(r.valid_citations if r.valid_citations is not None else "-"),
+            row += [mark(r.answer_correct) if not r.not_found or r.answer_correct else "没找到",
+                    str(r.valid_citations if r.valid_citations is not None else "-"),
                     str(r.invalid_citations if r.invalid_citations is not None else "-")]
         table.add_row(*row)
     console.print(table)
-    console.print(f"前 {rep.k} 命中率：[bold]{rep.hit_rate:.0%}[/]（{sum(r.hit for r in rep.results)}/{rep.total}）"
-                  f"　MRR：{rep.mrr:.3f}　目标 ≥ 80%")
+    strategy_used = strategy or a.cfg.retrieval.strategy
+    console.print(f"策略：{strategy_used}　前 {rep.k} 文件级命中率：[bold]{rep.hit_rate:.0%}[/]"
+                  f"（{sum(r.hit for r in rep.results)}/{rep.total}）　MRR：{rep.mrr:.3f}")
+    if rep.chunk_hit_rate is not None:
+        n = len(rep.with_location)
+        console.print(f"块级命中率：[bold]{rep.chunk_hit_rate:.0%}[/]（{sum(r.chunk_hit for r in rep.with_location)}/{n}，"
+                      f"只统计写了位置的题）　目标 ≥ 80%")
     if with_answer:
         rate = rep.citation_rate
+        if rep.answer_accuracy is not None:
+            console.print(f"答案正确率：[bold]{rep.answer_accuracy:.0%}[/]（只统计写了 expected_answer 的题）")
         console.print(f"含有效引用的回答：[bold]{(rate or 0):.0%}[/]　目标 ≥ 90%　已移除无效引用：{rep.invalid_total}")
+        console.print(f"文档对但答“没有找到”：{rep.doc_ok_not_found} 题　无出处回答：{rep.unsupported} 题")
         if rep.ttft_median_ms is not None:
-            console.print(f"首 token 中位数：{rep.ttft_median_ms / 1000:.2f}s　目标 ≤ 5s")
+            by_lang = "　".join(f"{k} {v / 1000:.2f}s" for k, v in rep.ttft_median_by_lang.items())
+            console.print(f"首 token 中位数：{rep.ttft_median_ms / 1000:.2f}s（{by_lang}）　目标：各语言 ≤ 5s")
     if out:
         import json
 

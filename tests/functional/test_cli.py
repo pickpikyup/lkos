@@ -107,8 +107,11 @@ def test_full_flow_index_search_ask_status(cli, corpus):
     assert "根据资料" in out and "引用" in out and "[1]" in out
     assert "送入模型的片段" in out and "首 token" in out and "可用内存" in out
 
-    out = cli("ask", "What is the retention policy for logs?", "--no-stream")
+    out = cli("ask", "What is the retention policy for logs?", "--no-stream", "--strategy", "flat")
     assert "security-policy.md" in out and "Security Policy > Log retention" in out
+    # doc_first：最佳片段补入了相邻块，引用位置变成合并后的标题与行号范围
+    out = cli("ask", "What is the retention policy for logs?", "--no-stream")
+    assert "security-policy.md · Security Policy · 行 " in out
 
     out = cli("status")
     assert "'indexed': 4" in out and "'zh'" in out and "'fr'" in out and "远端调用" in out
@@ -168,7 +171,7 @@ def test_eval_command(cli, corpus, tmp_path):
         {"question": "Où se trouve la machine à café ?", "expected_files": ["guide-accueil.md"]},
     ], allow_unicode=True), encoding="utf-8")
     out = cli("eval", str(q))
-    assert "命中率：100%（3/3）" in out
+    assert "文件级命中率：100%（3/3）" in out
     res = tmp_path / "out" / "results.json"
     out = cli("eval", str(q), "--with-answer", "--model", "test/other-chat", "--out", str(res))
     assert "含有效引用的回答：100%" in out and "首 token 中位数" in out
@@ -178,6 +181,22 @@ def test_eval_command(cli, corpus, tmp_path):
     assert data["model"] == "test/other-chat" and data["citation_rate"] == 1.0
     first = data["results"][0]
     assert first["answer"].startswith("根据资料") and first["cited"][0].startswith("[1] ")
+    assert data["strategy"] is None and "chunk_hit_rate" in data and "ttft_median_by_lang" in data
+
+
+def test_eval_chunk_level_and_strategy(cli, corpus, tmp_path):
+    cli("index", str(corpus))
+    q = tmp_path / "q2.yaml"
+    q.write_text(yaml.safe_dump([
+        {"question": "项目二期的预算上限是多少？", "expected_files": ["项目计划书.docx", "评审会议纪要.pdf"],
+         "expected_text": "二期预算上限为一百二十万元", "expected_answer": ["一百二十万"]},
+        {"question": "What is the retention policy for logs?", "expected_files": ["security-policy.md"]},
+    ], allow_unicode=True), encoding="utf-8")
+    out = cli("eval", str(q), "--strategy", "flat")
+    assert "策略：flat" in out and "块级命中率：100%（1/1" in out
+    out = cli("eval", str(q), "--with-answer")
+    assert "策略：doc_first" in out and "答案正确率：" in out and "文档对但答“没有找到”：0 题" in out
+    assert "首 token 中位数" in out and "zh " in out
 
 
 def test_ask_empty_index(cli):

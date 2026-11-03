@@ -78,7 +78,14 @@ lkos index ~/Documents/资料 --when-idle    # 或双击 run_index_idle.command
 lkos eval my-questions.yaml                 # 检索命中率，目标 ≥ 80%
 lkos eval my-questions.yaml --with-answer   # 加上引用有效率（目标 ≥ 90%）和首 token 时间（目标 ≤ 5s）
 lkos eval my-questions.yaml --with-answer --model local/qwen3:1.7b --out logs/1.7b.json   # 换模型对比，保存每题回答
+lkos eval my-questions.yaml --strategy flat # 用 v0.2 的选段方式对照（默认 doc_first：先选文档再选段落）
 ```
+
+题目可以加 `expected_text`（含答案的原文）、`expected_page`（PDF 页码）或 `expected_heading`（标题），
+评测时额外统计**块级命中率**（含答案的段落是否送进了模型，目标 ≥ 80%）；加 `expected_answer`（答案的几种写法）
+时统计**答案正确率**。写法见 `lkos/evaluation/evaluate.py` 开头的说明。
+
+M1 实测：双击 `run_m1.command`，用 `data/m1-questions.yaml` 对比 v0.2 与 M1 的命中率、答案正确率与首 token。
 
 ### 6. 内存基准（实施第 1 步）
 
@@ -111,10 +118,13 @@ scripts/test.sh --live   # 额外运行真实模型测试（需要 Ollama 和两
 
 ```yaml
 indexing:
-  chunk_max_chars: 800
-  chunk_overlap_chars: 100
+  chunk_chars_zh: 500       # 中文段落每块约 500 字
+  chunk_chars_other: 1200   # 英文、法文每块约 1,200 字符
+  chunk_overlap_ratio: 0.15
 retrieval:
   top_k: 4
+  strategy: doc_first     # 先选文档再选段落 | flat：v0.2 做法
+  per_doc_max: 3          # 同一文档最多送 3 个片段
   language_filter: soft   # soft：同语言加权但不排除 | strict：只检索同语言 | all：不区分
   vector_candidates: 200  # 二值粗筛候选数
 privacy:
@@ -124,6 +134,8 @@ privacy:
 
 更换 Embedding 模型或维度后需要重建索引：删除 `data/lkos.db` 后重新执行 `lkos index`，程序检测到不一致时也会提示。
 v0.1 建的索引与 v0.2 格式不兼容，同样需要删除后重建。
+修改切块参数不需要删除数据库：下次 `lkos index` 会自动重新切块（未改动文本的向量从缓存复用）。
+旧配置里的 `chunk_max_chars` 仍然有效，表示所有语言同一长度；想用按语言切块，删掉这一行即可。
 
 **8 GB 内存建议**：运行一次 `scripts/ollama_tune.sh`，开启 Flash Attention 与 8 bit KV 缓存（重启电脑后需再运行）。
 用 `scripts/ollama_tune.sh --check` 查看当前设置。

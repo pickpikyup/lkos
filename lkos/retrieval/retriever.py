@@ -14,11 +14,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from lkos.config import Config
+from lkos.config import STRATEGIES, Config
 from lkos.errors import ConfigError
 from lkos.indexing.language import detect_lang
 from lkos.indexing.tokenize import build_or_query
 from lkos.retrieval.fusion import rrf
+from lkos.retrieval.select import merge_adjacent, rank_documents, select_chunks
 from lkos.storage.repository import Repository
 from lkos.types import RetrievedChunk
 
@@ -34,6 +35,8 @@ class SearchDebug:
     vec_ids: list[int]
     fts_ids: list[int]
     boosted: list[int] = field(default_factory=list)
+    strategy: str = "flat"
+    doc_rank: list[tuple[int, float]] = field(default_factory=list)
 
 
 def normalize_mode(mode: str | None) -> str:
@@ -71,15 +74,27 @@ class Retriever:
         return qlang, mode, (qlang if mode == "strict" else None)
 
     def search(self, query: str, k: int | None = None, lang: str | None = "auto",
-               mode: str | None = None) -> list[RetrievedChunk]:
+               mode: str | None = None, strategy: str | None = None) -> list[RetrievedChunk]:
+        """strategy：doc_first（默认，先选文档再选段落）| flat（v0.2：直接取融合分最高的 k 个块）。"""
         if self.marker is None:
-            return self._search(query, k, lang, mode)
+            return self._search(query, k, lang, mode, strategy)
         with self.marker.active():
-            return self._search(query, k, lang, mode)
+            return self._search(query, k, lang, mode, strategy)
 
-    def _search(self, query: str, k: int | None, lang: str | None, mode: str | None) -> list[RetrievedChunk]:
+    def neighbors(self, chunk: RetrievedChunk) -> list[RetrievedChunk]:
+        """片段前后各一个相邻块（不含片段本身覆盖的块）。"""
+        if chunk.file_id is None or chunk.ordinal is None:
+            return []
+        end = chunk.ordinal_end if chunk.ordinal_end is not None else chunk.ordinal
+        return self.repo.neighbors(chunk.file_id, [o for o in (chunk.ordinal - 1, end + 1) if o >= 0])
+
+    def _search(self, query: str, k: int | None, lang: str | None, mode: str | None,
+                strategy: str | None) -> list[RetrievedChunk]:
         r = self.cfg.retrieval
         k = k or r.top_k
+        strategy = strategy or r.strategy
+        if strategy not in STRATEGIES:
+            raise ConfigError(f"检索策略只能是 {' 或 '.join(STRATEGIES)}：{strategy!r}")
         n = max(r.candidates_per_method, k)
         qlang, mode, lang_filter = self.resolve(query, lang, mode)
 
@@ -89,21 +104,35 @@ class Retriever:
         fts_ids = [cid for cid, _ in self.repo.fts_search(fts_query, n, lang_filter)] if fts_query else []
 
         fused = rrf([vec_ids, fts_ids], k=r.rrf_k)
-        boosted: list[int] = []
+        boost: dict[int, float] = {}
         if mode == "soft" and fused:
             langs = self.repo.langs_of([cid for cid, _ in fused])
-            out = []
-            for cid, score in fused:
-                if langs.get(cid) == qlang:
-                    score *= r.same_lang_boost
-                    boosted.append(cid)
-                out.append((cid, score))
-            fused = sorted(out, key=lambda x: -x[1])
-        fused = fused[:k]
-        self.last_debug = SearchDebug(qlang, mode, lang_filter, fts_query, vec_ids, fts_ids, boosted)
+            boost = {cid: r.same_lang_boost for cid, _ in fused if langs.get(cid) == qlang}
+        debug = SearchDebug(qlang, mode, lang_filter, fts_query, vec_ids, fts_ids, list(boost), strategy)
+        self.last_debug = debug
 
-        chunks = self.repo.load_chunks([cid for cid, _ in fused])
+        if strategy == "flat":
+            ranked = sorted(((cid, s * boost.get(cid, 1.0)) for cid, s in fused), key=lambda x: -x[1])[:k]
+            chunks = self.repo.load_chunks([cid for cid, _ in ranked])
+            scores = dict(ranked)
+            for c in chunks:
+                c.score = round(scores[c.chunk_id], 6)
+            return chunks
+
+        file_of = self.repo.files_of_chunks([cid for cid, _ in fused])
+        doc_rank = rank_documents(fused, file_of, boost, top=r.doc_score_top)
+        debug.doc_rank = doc_rank
         scores = dict(fused)
-        for c in chunks:
+        pool = {c.chunk_id: c for c in self.repo.load_chunks([cid for cid, _ in fused])}
+        for c in pool.values():
             c.score = round(scores[c.chunk_id], 6)
-        return chunks
+        want = k
+        while True:
+            picked = select_chunks(fused, file_of, doc_rank, want, r.per_doc_max)
+            chunks = [pool[cid] for cid in picked if cid in pool]
+            if r.merge_adjacent:
+                chunks = merge_adjacent(chunks)  # 按文档名次排列，文档内按原文顺序
+            # 合并后片段变少时再多取几个块，直到凑够 k 个片段或候选用完
+            if len(chunks) >= k or len(picked) < want:
+                return chunks
+            want += k - len(chunks)

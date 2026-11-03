@@ -31,6 +31,24 @@ def test_user_file_deep_merges_over_defaults(tmp_path):
     assert cfg.indexing.chunk_overlap_chars == 100
 
 
+def test_chunk_defaults_by_language_and_legacy_override():
+    from lkos.config import make_chunker
+
+    cfg = load_config(None)
+    assert (cfg.indexing.chunk_chars_zh, cfg.indexing.chunk_chars_other) == (500, 1200)
+    assert cfg.indexing.chunk_max_chars is None
+    assert make_chunker(cfg.indexing).signature() == "other1200-zh500-ov0.15-d2"
+    assert cfg.retrieval.strategy == "doc_first" and cfg.retrieval.per_doc_max == 3
+    legacy = load_config(None, overrides={"indexing": {"chunk_max_chars": 800}})
+    assert make_chunker(legacy.indexing).signature() == "all800-ov100c-d2"  # 旧写法：所有语言 800
+
+
+@pytest.mark.parametrize("bad", [{"chunk_chars_zh": 10}, {"chunk_overlap_ratio": 0.6}])
+def test_chunk_by_language_validation(bad):
+    with pytest.raises(ConfigError):
+        load_config(None, overrides={"indexing": bad})
+
+
 def test_missing_user_file_uses_defaults(tmp_path):
     cfg = load_config(tmp_path / "nope.yaml")
     assert cfg.retrieval.top_k == 4

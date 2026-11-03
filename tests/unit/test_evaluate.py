@@ -87,3 +87,108 @@ def test_eval_lang_option(app, tmp_path):
     q = [Question("Où se trouve la machine à café ?", ["security-policy.md"])]
     assert not evaluate(q, app.retriever, k=5, mode="strict").results[0].hit  # 严格模式：只返回法文块
     assert evaluate(q, app.retriever, k=8, lang="all").results[0].hit          # 不区分语言：英文文档也会进入候选
+
+
+# ---------- 块级命中与答案正确率（M1） ----------
+from lkos.evaluation.evaluate import (EvalReport, Question, QuestionResult, answer_correct, chunk_matches,
+                                      is_not_found, norm_text)
+from lkos.types import Answer, Location, RetrievedChunk
+
+
+def chunk(path="/d/报告.pdf", text="最小配置为 4 台 Atlas 800I A2", page=3, page_end=None, heading=None):
+    return RetrievedChunk(1, path, path.rsplit(".", 1)[-1], text, "zh",
+                          Location(page=page, page_end=page_end, heading_path=heading))
+
+
+def test_load_questions_with_location_and_answer(tmp_path):
+    p = tmp_path / "q.yaml"
+    p.write_text("""
+- question: 最少几台？
+  expected_files: 报告.pdf
+  expected_text: 最小配置为4台
+  expected_page: [3, 4]
+  expected_answer: [4台, 四台]
+- question: 标题题
+  expected_files: [手册.docx]
+  expected_heading: 第二章
+  expected_answer: 120
+""", encoding="utf-8")
+    a, b = load_questions(p)
+    assert a.expected_text == ["最小配置为4台"] and a.expected_page == [3, 4] and a.expected_answer == ["4台", "四台"]
+    assert a.has_location and b.has_location and b.expected_heading == "第二章" and b.expected_answer == ["120"]
+    p.write_text("- question: x\n  expected_files: [a]\n  expected_page: 第三页\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_questions(p)
+    p.write_text("- question: x\n  expected_files: [a]\n  expected_text: {a: 1}\n", encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_questions(p)
+
+
+def test_norm_text_ignores_width_case_and_whitespace():
+    assert norm_text("Ａtlas  800I\nA2") == norm_text("atlas 800i a2") == "atlas800ia2"
+
+
+def test_chunk_matches_by_text_page_heading():
+    q = Question("q", ["报告.pdf"], expected_text=["最小配置为4台"])
+    assert chunk_matches(chunk(), q)                                  # 空白不同也算
+    assert not chunk_matches(chunk(path="/d/别的.pdf"), q)            # 文件不对
+    assert not chunk_matches(chunk(text="推荐配置为 8 台"), q)
+    qp = Question("q", ["报告.pdf"], expected_page=[4])
+    assert not chunk_matches(chunk(page=3), qp) and chunk_matches(chunk(page=3, page_end=5), qp)
+    qh = Question("q", ["手册.docx"], expected_heading="第二章")
+    assert chunk_matches(chunk(path="/d/手册.docx", page=None, heading="手册 > 第二章 > 2.1"), qh)
+    assert not chunk_matches(chunk(path="/d/手册.docx", page=None, heading=None), qh)
+    assert not chunk_matches(chunk(), Question("q", ["报告.pdf"]))    # 没写位置
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("最少需要 4 台 [1]。", True), ("最少需要四台 [1]", True), ("需要 8 台", False)])
+def test_answer_correct(text, expected):
+    assert answer_correct(text, ["4台", "四台"]) is expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("资料中没有找到相关信息", True), ("No relevant information was found in the sources.", True),
+    ("Aucune information pertinente n'a été trouvée", True), ("预算是 120 万 [1]", False)])
+def test_is_not_found(text, expected):
+    assert is_not_found(text) is expected
+
+
+def test_report_counts_doc_ok_not_found_and_unsupported():
+    def res(hit, not_found, valid, correct=None, chunk_hit=None):
+        r = QuestionResult("q", ["a"], [], hit, 1 if hit else None, valid_citations=valid, invalid_citations=0,
+                           ttft_ms=1000, not_found=not_found, answer_correct=correct, chunk_hit=chunk_hit, lang="zh")
+        return r
+
+    rep = EvalReport(k=4, results=[res(True, True, 0), res(True, False, 0, True, True), res(False, True, 0),
+                                   res(True, False, 2, False, False)], with_answer=True)
+    assert rep.doc_ok_not_found == 1 and rep.unsupported == 1
+    assert rep.answer_accuracy == 0.5 and rep.chunk_hit_rate == 0.5
+    d = rep.to_dict()
+    assert d["chunk_hit_total"] == 2 and d["ttft_median_by_lang"] == {"zh": 1000}
+
+
+def test_evaluate_reports_chunk_hit_and_answer(app):
+    qs = [Question("项目二期的预算上限是多少？", ["项目计划书.docx", "评审会议纪要.pdf"],
+                   expected_text=["二期预算上限为一百二十万元"], expected_answer=["一百二十万"]),
+          Question("What is the retention policy for logs?", ["security-policy.md"],
+                   expected_text=["this text is not in the corpus"])]
+    rep = evaluate(qs, app.retriever, k=4)
+    assert [r.chunk_hit for r in rep.results] == [True, False] and rep.chunk_hit_rate == 0.5
+    assert rep.results[0].context and rep.results[0].lang == "zh"
+
+    class QA:
+        def ask(self, question, **kw):
+            hits = app.retriever.search(question, k=4)
+            return Answer(text="资料中没有找到相关信息", no_context=False, context=hits)
+
+    rep = evaluate(qs[:1], app.retriever, qa=QA(), k=4)
+    r = rep.results[0]
+    assert r.hit and r.chunk_hit and r.not_found and r.answer_correct is False
+    assert rep.doc_ok_not_found == 1
+
+
+def test_evaluate_passes_strategy(app):
+    q = [Question("项目二期的预算上限是多少？", ["项目计划书.docx"])]
+    rep = evaluate(q, app.retriever, k=4, strategy="flat")
+    assert rep.strategy == "flat" and app.retriever.last_debug.strategy == "flat"
