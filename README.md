@@ -57,6 +57,19 @@ lkos ask "What is the retention policy?" --show-context
 lkos chat                                     # 连续提问，exit 退出
 ```
 
+### 闲时索引
+
+大量文档首次索引耗时很长（100 GB 估计 20–86 小时）。用 `--when-idle` 让索引只在空闲时运行：
+
+```bash
+lkos index ~/Documents/资料 --when-idle    # 或双击 run_index_idle.command
+```
+
+- 正在问答（`ask` / `chat` / `search` / `eval`）时暂停，答完继续：两者共用一块 GPU 和 8 GB 内存，同时跑只会互相拖慢；
+- 你在用电脑时暂停，键盘鼠标空闲 2 分钟后继续（`indexing.idle_seconds`）；
+- 使用电池时暂停，接通电源后继续（`indexing.require_ac_power`）；
+- 最近修改的文件先索引（`indexing.order: recent_first`），中途停下时常用文档已可检索；Ctrl-C 随时停止，下次续传。
+
 ### 5. 评测（POC 验收）
 
 参考 `examples/questions.example.yaml` 编写 30 个测试问题（中文 20、英文 5、法文 5），标注每题应命中的文件：

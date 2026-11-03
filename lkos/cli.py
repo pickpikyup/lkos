@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -90,8 +91,10 @@ def init():
 def index(
     folder: Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True, help="要索引的文件夹"),
     limit: Optional[int] = typer.Option(None, "--limit", min=1, help="只处理前 N 个文件（不清理已删除文件）"),
+    when_idle: bool = typer.Option(False, "--when-idle",
+                                   help="闲时索引：正在问答、使用电池、或你在用电脑时自动暂停，条件满足后继续"),
 ):
-    """索引文件夹（增量：未变化的文件跳过，改名的文件不重新计算 Embedding）。"""
+    """索引文件夹（增量：未变化的文件跳过，改名的文件不重新计算 Embedding；最近修改的文件优先）。"""
     from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
 
     try:
@@ -111,7 +114,15 @@ def index(
                 progress.update(task, completed=ev.files_seen,
                                 description=f"{labels.get(ev.action, ev.action)} {Path(ev.path).name[:40]}")
 
-            rep = a.indexer.index_folder(folder, limit=limit, on_progress=on_progress)
+            gate = None
+            if when_idle:
+                from lkos.indexing.scheduler import REASONS
+
+                def on_pause(reason: str) -> None:
+                    progress.console.print(f"[dim]{time.strftime('%H:%M:%S')}[/] {REASONS[reason]}")
+
+                gate = a.index_gate(on_pause=on_pause)
+            rep = a.indexer.index_folder(folder, limit=limit, on_progress=on_progress, gate=gate)
     except KeyboardInterrupt:
         err.print("已中断。已完成的文件已保存，重新运行即可续传。")
         raise typer.Exit(code=130)
@@ -128,6 +139,10 @@ def index(
                          ("　解析（秒）", rep.parse_seconds), ("　计算向量（秒）", rep.embed_seconds)]:
         table.add_row(label, str(value))
     console.print(table)
+    if when_idle and gate is not None:
+        p = gate.pauses
+        console.print(f"闲时索引：暂停共 {gate.paused_seconds:.0f} 秒（问答 {p['qa']} 次 · 用户使用电脑 {p['busy']} 次 · "
+                      f"使用电池 {p['battery']} 次）")
     if rep.files_indexed and rep.seconds:
         console.print(f"吞吐：{rep.files_indexed / rep.seconds:.2f} 文件/秒，{rep.chunks_added / rep.seconds:.1f} 文本块/秒")
     if not rep.cleanup_done:

@@ -253,3 +253,9 @@ def _row(out: str, label: str) -> str:
         if parts and parts[0].strip("│| ") == label:
             return parts[-1].strip("│| ")
     raise AssertionError(f"输出中没有“{label}”一行：\n{out}")
+
+
+def test_index_when_idle(cli, corpus):
+    """闲时模式：在测试环境里（非 macOS，视为已接电源且空闲）不应暂停，正常完成并汇报暂停统计。"""
+    out = cli("index", str(corpus), "--when-idle")
+    assert _row(out, "新索引") == "4" and "闲时索引：暂停共 0 秒" in out

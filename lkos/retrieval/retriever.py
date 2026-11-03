@@ -47,10 +47,11 @@ def normalize_mode(mode: str | None) -> str:
 
 
 class Retriever:
-    def __init__(self, cfg: Config, repo: Repository, gateway):
+    def __init__(self, cfg: Config, repo: Repository, gateway, marker=None):
         self.cfg = cfg
         self.repo = repo
         self.gateway = gateway
+        self.marker = marker  # 问答活动标记：检索期间让后台索引暂停
         self.last_debug: SearchDebug | None = None
 
     def resolve(self, query: str, lang: str | None, mode: str | None) -> tuple[str, str, str | None]:
@@ -71,6 +72,12 @@ class Retriever:
 
     def search(self, query: str, k: int | None = None, lang: str | None = "auto",
                mode: str | None = None) -> list[RetrievedChunk]:
+        if self.marker is None:
+            return self._search(query, k, lang, mode)
+        with self.marker.active():
+            return self._search(query, k, lang, mode)
+
+    def _search(self, query: str, k: int | None, lang: str | None, mode: str | None) -> list[RetrievedChunk]:
         r = self.cfg.retrieval
         k = k or r.top_k
         n = max(r.candidates_per_method, k)

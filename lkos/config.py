@@ -69,6 +69,10 @@ class IndexingConfig:
     chunk_max_chars: int = 800
     chunk_overlap_chars: int = 100
     skip_hidden: bool = True
+    order: str = "recent_first"          # recent_first：最近修改的文件先索引 | path：按路径
+    idle_seconds: float = 120            # --when-idle：用户无操作多久后才索引
+    require_ac_power: bool = True        # --when-idle：使用电池时暂停
+    poll_seconds: float = 5
 
 
 @dataclass
@@ -183,6 +187,10 @@ def parse_config(raw: dict) -> Config:
             chunk_max_chars=int(idx.get("chunk_max_chars", 800)),
             chunk_overlap_chars=int(idx.get("chunk_overlap_chars", 100)),
             skip_hidden=bool(idx.get("skip_hidden", True)),
+            order=str(idx.get("order", "recent_first")),
+            idle_seconds=float(idx.get("idle_seconds", 120)),
+            require_ac_power=bool(idx.get("require_ac_power", True)),
+            poll_seconds=float(idx.get("poll_seconds", 5)),
         )
         ret = raw.get("retrieval") or {}
         retrieval = RetrievalConfig(
@@ -215,6 +223,8 @@ def _validate(cfg: Config) -> None:
         raise ConfigError("models.embedding.dim 必须为正整数")
     if cfg.indexing.chunk_overlap_chars >= cfg.indexing.chunk_max_chars:
         raise ConfigError("chunk_overlap_chars 必须小于 chunk_max_chars")
+    if cfg.indexing.order not in ("recent_first", "path"):
+        raise ConfigError("indexing.order 只能是 recent_first 或 path")
     if cfg.retrieval.language_filter not in ("soft", "strict", "all", "auto"):
         raise ConfigError("retrieval.language_filter 只能是 soft、strict 或 all")
     if cfg.retrieval.same_lang_boost < 1:

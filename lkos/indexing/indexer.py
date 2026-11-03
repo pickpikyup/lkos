@@ -67,6 +67,13 @@ class Indexer:
 
     # ---------- 遍历 ----------
     def walk(self, folder: Path) -> Iterator[Path]:
+        files = list(self._walk(folder))
+        if self.cfg.indexing.order == "recent_first":
+            # 最近修改的先处理：闲时索引被打断时，最常用的文档已经可以检索
+            files.sort(key=lambda p: (-p.stat().st_mtime, str(p)))
+        yield from files
+
+    def _walk(self, folder: Path) -> Iterator[Path]:
         max_bytes = self.cfg.indexing.max_file_size_mb * 1024 * 1024
         for dirpath, dirnames, filenames in os.walk(folder, followlinks=False):
             if self.cfg.indexing.skip_hidden:
@@ -88,7 +95,8 @@ class Indexer:
 
     # ---------- 主流程 ----------
     def index_folder(self, folder: Path, limit: int | None = None,
-                     on_progress: ProgressCallback | None = None) -> IndexReport:
+                     on_progress: ProgressCallback | None = None, gate=None) -> IndexReport:
+        """gate：闲时索引闸门（lkos.indexing.scheduler.IndexGate），每个文件、每批向量前检查，条件不满足时暂停。"""
         t0 = time.perf_counter()
         folder = Path(folder).expanduser().resolve()
         if not folder.is_dir():
@@ -109,7 +117,9 @@ class Indexer:
                 run.files_seen += 1
                 path = norm_path(p)
                 seen.add(path)
-                action, detail = self._index_one(p, path, source_id, run)
+                if gate is not None:
+                    gate.wait()
+                action, detail = self._index_one(p, path, source_id, run, gate)
                 if action == "failed":
                     failures.append((path, detail or ""))
                 emit(path, action, detail)
@@ -133,7 +143,7 @@ class Indexer:
             embed_seconds=round(run.embed_ms / 1000, 2), vectors_pruned=pruned,
         )
 
-    def _index_one(self, p: Path, path: str, source_id: int, run: IndexRun) -> tuple[str, str | None]:
+    def _index_one(self, p: Path, path: str, source_id: int, run: IndexRun, gate=None) -> tuple[str, str | None]:
         parser = parser_for(p, self.cfg.indexing.extensions)
         st = p.stat()
         record = self.repo.get_file(path)
@@ -189,6 +199,10 @@ class Indexer:
         items = list(todo.items())
         batch = self.cfg.embedding.batch_size
         for i in range(0, len(items), batch):
+            if gate is not None and i:
+                t_wait = time.perf_counter()
+                gate.wait()
+                t_embed += time.perf_counter() - t_wait  # 暂停时间不计入向量耗时
             part = items[i:i + batch]
             for (h, _), vec in zip(part, self.gateway.embed([t for _, t in part])):
                 new_vecs[h] = vec

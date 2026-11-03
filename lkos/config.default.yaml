@@ -38,6 +38,11 @@ indexing:
   chunk_max_chars: 800
   chunk_overlap_chars: 100
   skip_hidden: true
+  order: recent_first           # 最近修改的文件先索引，常用文档最先可检索
+  # 闲时索引（lkos index --when-idle）：问答时、使用电池时、用户在用电脑时暂停
+  idle_seconds: 120
+  require_ac_power: true
+  poll_seconds: 5
 
 retrieval:
   top_k: 4                      # 4K 上下文下放 4 个 800 字的片段

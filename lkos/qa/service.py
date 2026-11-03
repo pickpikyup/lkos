@@ -13,14 +13,21 @@ TASK = "knowledge_qa"
 
 
 class QAService:
-    def __init__(self, cfg: Config, retriever, gateway):
+    def __init__(self, cfg: Config, retriever, gateway, marker=None):
         self.cfg = cfg
         self.retriever = retriever
         self.gateway = gateway
+        self.marker = marker  # 问答活动标记：检索 + 生成期间让后台索引暂停
 
     def ask(self, question: str, k: int | None = None, model_override: str | None = None,
             lang: str | None = "auto", on_token: TokenCallback | None = None,
             mode: str | None = None) -> Answer:
+        if self.marker is None:
+            return self._ask(question, k, model_override, lang, on_token, mode)
+        with self.marker.active():
+            return self._ask(question, k, model_override, lang, on_token, mode)
+
+    def _ask(self, question, k, model_override, lang, on_token, mode) -> Answer:
         question = question.strip()
         qlang = detect_lang(question)
         hits = self.retriever.search(question, k=k, lang=lang, mode=mode)
