@@ -83,6 +83,9 @@ fi
 .venv/bin/python -c "import sqlite3, sqlite_vec; c = sqlite3.connect(':memory:'); c.enable_load_extension(True); sqlite_vec.load(c); print('sqlite-vec', c.execute('select vec_version()').fetchone()[0])" \
   || die "当前 Python 不能加载 sqlite-vec。"
 
+# 提交前自动拦下私人数据（文档、数据库、日志）
+git config core.hooksPath scripts/git-hooks 2>/dev/null || true
+
 step "3/5 运行测试（单元 + 功能 + 真实模型）"
 TEST_STATUS="通过"
 scripts/test.sh --live || TEST_STATUS="有失败（见上方 FAILURES），继续执行演示与基准"

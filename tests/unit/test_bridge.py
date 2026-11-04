@@ -95,3 +95,22 @@ def test_index_pauses_during_qa_and_manual_pause(bridge, corpus):
     assert wait_for(lambda: bridge.library()["stats"]["files"] == 4)
     assert bridge.update_all()["queued"] == 1
     assert wait_for(lambda: bridge._indexer.state["state"] == "idle" and not bridge._indexer.state["queued"])
+
+
+@pytest.mark.parametrize("answer,expect", [
+    ("资料中没有找到相关信息。", True),
+    ("思想领导力是引领他人思考的能力 [1]。资料中没有找到谁能领导的说明。", False),   # 部分回答：照常显示
+    ("No relevant information was found in the sources.", True),
+])
+def test_not_found_only_for_whole_answer(tmp_path, corpus, answer, expect):
+    fake = FakeProvider("test", dim=TEST_DIM)
+    fake.answer_fn = lambda messages: answer
+    b = Bridge(home=tmp_path / "h", overrides=fake_overrides(), providers={"test": fake}, auto_refresh=False)
+    try:
+        b._call(lambda: b._app.indexer.index_folder(corpus))
+        b.ask("项目二期的预算上限是多少？")
+        assert wait_for(lambda: any(e["type"] == "done" for e in b._sent))
+        rec = next(e for e in b._sent if e["type"] == "done")["record"]
+        assert rec["not_found"] is expect
+    finally:
+        b._close()

@@ -1,7 +1,7 @@
 #!/bin/bash
 # 在任何目录都能运行：lkos（交互式问答）、lkos ask "问题"、lkos source add <文件夹>、lkos update ……
 # 想在终端里直接输入 lkos，把下面这行加入 ~/.zshrc：
-#   alias lkos='"<项目文件夹>/bin/lkos"'
+#   alias lkos='"<项目目录>/bin/lkos"'（<项目目录> 换成这个文件夹的完整路径）
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [ ! -x "$DIR/.venv/bin/lkos" ]; then
   echo "还没有安装：先在项目目录运行 scripts/setup_mac.sh" >&2

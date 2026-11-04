@@ -126,3 +126,21 @@ def test_answer_in_question_language(setup):
     app.qa.ask("Où se trouve la machine à café ?")
     assert fake.chat_calls[0]["messages"][0]["content"] == SYSTEM_PROMPTS["fr"]
     app.close()
+
+
+# ---------- 回答语言、部分回答（2026-11-04：用户反馈“总是提示找不到资料”） ----------
+@pytest.mark.parametrize("q,lang", [
+    ("AI", "zh"), ("5G FWA", "zh"), ("思想领导力是什么", "zh"),
+    ("What factors is the national alignment score based on?", "en"),
+    ("Où se trouve la machine à café ?", "fr"),
+])
+def test_answer_lang_short_latin_keywords_default_to_chinese(q, lang):
+    from lkos.qa.service import answer_lang
+
+    assert answer_lang(q) == lang
+
+
+def test_prompt_allows_partial_answers():
+    zh = SYSTEM_PROMPTS["zh"]
+    assert "逐个回答" in zh and "资料中没有提到" in zh and "只有当所有资料都与问题无关时" in zh
+    assert "only if none of the sources" in SYSTEM_PROMPTS["en"].lower()

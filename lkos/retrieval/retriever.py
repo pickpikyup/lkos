@@ -24,6 +24,7 @@ from lkos.storage.repository import Repository
 from lkos.types import RetrievedChunk
 
 MODES = ("soft", "strict", "all")
+MIN_CHUNK_CHARS = 40   # 短于这个长度的片段（封面、页眉）候选足够时不送进模型
 
 
 @dataclass
@@ -126,6 +127,11 @@ class Retriever:
         pool = {c.chunk_id: c for c in self.repo.load_chunks([cid for cid, _ in fused])}
         for c in pool.values():
             c.score = round(scores[c.chunk_id], 6)
+        # 只有标题、页眉的极短片段（封面页“××课程”之类）几乎不含答案却常因关键词命中排在前面：
+        # 候选足够时不让它们占名额
+        substantial = [(cid, sc) for cid, sc in fused if cid in pool and len(pool[cid].text.strip()) >= MIN_CHUNK_CHARS]
+        if len(substantial) >= k:
+            fused = substantial
         want = k
         while True:
             picked = select_chunks(fused, file_of, doc_rank, want, r.per_doc_max)

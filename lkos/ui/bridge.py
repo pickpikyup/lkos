@@ -309,7 +309,9 @@ class Bridge:
     def _save(self, question: str, ans: Answer) -> dict:
         cited = sorted({c.ref for c in ans.citations})
         ctx = [chunk_dict(i, c, set(cited)) for i, c in enumerate(ans.context, start=1)]
-        not_found = bool(ans.no_context) or is_not_found(ans.text)
+        # 只有“没有标注任何出处、且整段回答就是一句没找到”才算没找到；
+        # 回答了一部分、另一部分说“资料中没有提到”的，照常显示回答
+        not_found = bool(ans.no_context) or (not cited and is_not_found(ans.text) and len(ans.text) <= 60)
         model = self._app.cfg.tasks["knowledge_qa"].default_model
         hid = self._app.repo.add_history(question, ans.text, not_found, json.dumps(ctx, ensure_ascii=False),
                                          json.dumps(cited), model, ans.ttft_ms, ans.latency_ms)

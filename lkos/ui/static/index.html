@@ -37,7 +37,7 @@
     <div class="composer-wrap" id="composer-wrap">
       <form class="composer" id="composer">
         <label for="q" class="sr-only">问题</label>
-        <textarea id="q" rows="2" placeholder="问一个关于你资料的问题…"></textarea>
+        <textarea id="q" rows="2" placeholder="问一个关于你资料的问题，⌘↩ 发送"></textarea>
         <div class="row">
           <div class="seg" role="group" aria-label="模式">
             <button type="button" data-mode="ask" aria-pressed="true">问答</button>
@@ -45,7 +45,7 @@
           </div>
           <span class="hint">范围：全部资料</span>
           <span class="grow"></span>
-          <span class="hint">回车发送 · Shift+回车换行</span>
+          <span class="hint" id="send-hint">⌘↩ 发送 · ↩ 换行</span>
           <button type="submit" class="send" aria-label="发送">
             <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M4 7l4-4 4 4"/></svg>
           </button>

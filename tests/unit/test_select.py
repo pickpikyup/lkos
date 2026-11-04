@@ -166,3 +166,22 @@ def test_config_rejects_bad_retrieval_options():
     for bad in ({"strategy": "x"}, {"per_doc_max": 0}, {"neighbor_ratio": -1}):
         with pytest.raises(ConfigError):
             load_config(None, overrides={"retrieval": bad})
+
+
+def test_tiny_title_chunks_do_not_take_slots(tmp_path):
+    """封面页只有标题的片段（关键词命中排名靠前）在候选足够时不送进模型。"""
+    docs = tmp_path / "d"
+    docs.mkdir()
+    (docs / "课程.md").write_text("# 思想领导力课程\n\n## 封面\n\n思想领导力课程\n\n## 定义\n\n"
+                                + "思想领导力是一些观点和想法的集合，通过深刻的洞察力引领他人思考、激发变革。" * 2
+                                + "\n\n## 案例\n\n" + "公司持续推出思想领导力产品，推动产业发展，促进做大市场空间。" * 2 + "\n",
+                                encoding="utf-8")
+    (docs / "其他.md").write_text("# 其他\n\n" + "这是一段与思想领导力无关的较长说明文字，用来凑足候选数量。" * 3 + "\n",
+                                encoding="utf-8")
+    a = App.open(home=tmp_path / "h", overrides=fake_overrides(), providers={"test": FakeProvider("test", dim=TEST_DIM)})
+    try:
+        a.indexer.index_folder(docs)
+        hits = a.retriever.search("思想领导力", k=2)
+        assert hits and all(len(h.text.strip()) >= 40 for h in hits)
+    finally:
+        a.close()

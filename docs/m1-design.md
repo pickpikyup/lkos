@@ -72,11 +72,11 @@ QAService.ask:
 题目新增可选字段（不写则只评文件级）：
 
 ```yaml
-- question: 部署 DeepSeek V3 的最小配置需要几台 Atlas 800I A2？
-  expected_files: [昇腾和DeepSeek适配情况内部沟通FAQ V1.0版本 (脱敏版).docx]
-  expected_text: 最小配置为4台        # 含答案的原文片段（去空白、全半角后比较）
-  expected_page: 12                   # 可选：PDF 页码；DOCX / MD 用 expected_heading
-  expected_answer: ["4台", "4 台", "四台"]   # 回答里出现任意一个即判为答对
+- question: 项目二期的预算上限是多少？
+  expected_files: [项目计划书.docx]
+  expected_text: 二期预算上限为一百二十万元   # 含答案的原文片段（去空白、全半角后比较）
+  expected_page: 3                          # 可选：PDF 页码；DOCX / MD 用 expected_heading
+  expected_answer: ["一百二十万", "120 万"]   # 回答里出现任意一个即判为答对
 ```
 
 | 指标 | 定义 |

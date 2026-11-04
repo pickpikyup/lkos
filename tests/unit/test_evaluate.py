@@ -95,7 +95,7 @@ from lkos.evaluation.evaluate import (EvalReport, Question, QuestionResult, answ
 from lkos.types import Answer, Location, RetrievedChunk
 
 
-def chunk(path="/d/报告.pdf", text="最小配置为 4 台 Atlas 800I A2", page=3, page_end=None, heading=None):
+def chunk(path="/d/报告.pdf", text="最小配置为 4 台 X9 服务器", page=3, page_end=None, heading=None):
     return RetrievedChunk(1, path, path.rsplit(".", 1)[-1], text, "zh",
                           Location(page=page, page_end=page_end, heading_path=heading))
 
@@ -125,7 +125,7 @@ def test_load_questions_with_location_and_answer(tmp_path):
 
 
 def test_norm_text_ignores_width_case_and_whitespace():
-    assert norm_text("Ａtlas  800I\nA2") == norm_text("atlas 800i a2") == "atlas800ia2"
+    assert norm_text("Ｘ9  服务\n器") == norm_text("x9 服务器") == "x9服务器"
 
 
 def test_chunk_matches_by_text_page_heading():

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from lkos.config import Config
 from lkos.gateway.base import TokenCallback
 from lkos.indexing.language import detect_lang
@@ -11,6 +13,16 @@ from lkos.retrieval.select import merge_adjacent
 from lkos.types import Answer, RetrievedChunk
 
 TASK = "knowledge_qa"
+_LATIN_WORD = re.compile(r"[A-Za-zÀ-ÿ]{2,}")
+_CJK = re.compile(r"[\u3400-\u9fff]")
+
+
+def answer_lang(question: str, cfg=None) -> str:
+    """回答用的语言。完整的英文 / 法文句子按句子语言回答；只有一两个英文词（如“AI”“5G FWA”）、
+    没有汉字的短输入，按默认语言（中文）回答——这类输入多半是中文用户在输关键词。"""
+    if not _CJK.search(question) and len(_LATIN_WORD.findall(question)) < 3:
+        return "zh"
+    return detect_lang(question)
 
 
 class QAService:
@@ -31,7 +43,7 @@ class QAService:
 
     def _ask(self, question, k, model_override, lang, on_token, mode, strategy, on_context=None) -> Answer:
         question = question.strip()
-        qlang = detect_lang(question)
+        qlang = answer_lang(question, self.cfg)
         if strategy is None:
             hits = self.retriever.search(question, k=k, lang=lang, mode=mode)
         else:

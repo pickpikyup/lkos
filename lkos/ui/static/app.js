@@ -199,6 +199,11 @@
       return;
     }
     h += questionBlock(c.question, c.phase === "search");
+    if (c.phase === "search" && c.autoKeyword) {
+      h += `<div class="notice"><div><div class="h">这看起来是关键词，已直接搜索原文</div>
+        <div class="d">想让模型回答，请输入完整的问题，例如“${esc(c.question)} 在运营商业务里有哪些应用？”</div>
+        <div class="chips" style="margin-top:8px"><button type="button" class="btn small" data-action="ask-anyway">仍然让模型回答</button></div></div></div>`;
+    }
     if (c.phase === "search") {
       h += `<div class="found"><span>${c.results.length ? `找到 ${c.results.length} 个相关片段 · ${sec(c.ms)}` : "没有找到相关内容"}</span></div>`;
       h += `<div class="card-list">${c.results.map((r) => hitCard(r)).join("")}</div>`;
@@ -345,14 +350,25 @@
     if (!on) $("q").focus();
   }
 
+  // 只有一两个关键词、没有问句特征的输入（如“AI”“5G FWA”），模型很难判断要回答什么，
+  // 多半回答“没有找到”。这类输入直接搜索原文，并提示怎样提问。
+  const QUESTION_HINT = /[?？]|什么|怎么|怎样|如何|为什么|为何|哪|谁|多少|几|是否|吗|呢|是不是|有没有|介绍|总结|概括|说明|解释|比较|区别|列出|列举|告诉|分析|\b(what|how|why|who|which|when|where|is|are|does|do|can|list|explain|summari[sz]e|compare)\b/i;
+  function isKeywordQuery(q) {
+    if (QUESTION_HINT.test(q)) return false;
+    const cjk = (q.match(/[\u3400-\u9fff]/g) || []).length;
+    const words = (q.match(/[A-Za-z0-9][A-Za-z0-9.+\-]*/g) || []).length;
+    return cjk <= 6 && words <= 2 && q.length <= 16;
+  }
+
   let ticker = null;
-  async function submit(text) {
+  async function submit(text, forceAsk) {
     const q = (text != null ? text : $("q").value).trim();
     if (!q) return;
     if (S.view !== "qa") showView("qa");
     $("q").value = "";
-    if (S.mode === "search") {
-      S.cur = { phase: "search", question: q, results: [], ms: 0 };
+    const autoKeyword = S.mode === "ask" && !forceAsk && isKeywordQuery(q);
+    if (S.mode === "search" || autoKeyword) {
+      S.cur = { phase: "search", question: q, results: [], ms: 0, autoKeyword };
       try {
         const r = await api("search", q);
         S.cur.results = r.results; S.cur.ms = r.ms;
@@ -383,7 +399,7 @@
   function setMode(mode) {
     S.mode = mode;
     document.querySelectorAll(".seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
-    $("q").placeholder = mode === "search" ? "输入关键词，只搜索原文（不生成回答，很快）" : "问一个关于你资料的问题…";
+    $("q").placeholder = mode === "search" ? "输入关键词，只搜索原文（不生成回答，很快）" : "问一个关于你资料的问题，⌘↩ 发送";
     $("q").focus();
   }
 
@@ -527,7 +543,8 @@
       case "add": return addFolder();
       case "lib": return showView("lib");
       case "copy": return copy(S.cur.record.answer.replace(/\s*\[\d+(?:\s*[,，、]\s*\d+)*\]/g, ""));
-      case "again": return submit(S.cur.question);
+      case "again": return submit(S.cur.question, true);
+      case "ask-anyway": return submit(S.cur.question, true);
       case "search-instead": setMode("search"); $("q").value = S.cur ? S.cur.question : ""; return;
       case "update-all": { const r = await api("update_all"); toast(r.queued ? `${r.queued} 个文件夹已加入更新队列` : "已经在更新了"); return; }
       case "pause": await api("pause_index"); return refreshLibrary();
@@ -543,11 +560,22 @@
   $("btn-stop").addEventListener("click", () => api("stop"));
   document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+  // 输入：回车换行，⌘+回车（Windows/Linux 上 Ctrl+回车）发送。
+  // 输入法保护：中文输入法里用回车选英文、Esc 取消候选时，键盘事件会带 isComposing 或 keyCode 229；
+  // Safari / WebKit 还会在 compositionend 之后紧跟一次回车事件，所以输入法结束后 80 ms 内的按键也忽略。
+  let compositionEndAt = 0;
+  const imeActive = (e) => e.isComposing || e.keyCode === 229 || Date.now() - compositionEndAt < 80;
+  $("q").addEventListener("compositionend", () => { compositionEndAt = Date.now(); });
   $("q").addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); submit(); }
+    if (e.key !== "Enter" || imeActive(e)) return;
+    if (e.metaKey || e.ctrlKey) { e.preventDefault(); submit(); }
+    // 普通回车：保持默认行为（换行）
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !$("generating").hidden) { api("stop"); return; }
+    if (e.key === "Escape" && !$("generating").hidden) {
+      if (imeActive(e)) return;   // 输入法里按 Esc 取消候选词，不是要停止生成
+      api("stop"); return;
+    }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "n") { e.preventDefault(); newQuestion(); return; }
     if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key) && currentSources().some((s) => s.n === Number(e.key))) {
       e.preventDefault(); select(e.key);
