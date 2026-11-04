@@ -26,7 +26,14 @@ from lkos.app import App
 from lkos.errors import Cancelled, LkosError
 from lkos.evaluation.evaluate import is_not_found
 from lkos.indexing.scheduler import GateConfig, IndexGate
+from lkos.logs import get_logger, set_level, setup_logging
 from lkos.types import Answer, RetrievedChunk
+
+log = get_logger("app")
+ilog = get_logger("index")
+LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
+SETTINGS_FILE = "ui-settings.json"
+DEFAULT_SETTINGS = {"dev_mode": False}
 
 AUTO_REFRESH_DAYS = 7          # 默认每周刷新
 AUTO_CHECK_SECONDS = 600       # 每 10 分钟看一次有没有到期的文件夹
@@ -86,6 +93,8 @@ class _Gate:
                     self.w._set(state="running", reason=None)
                 return
             if reason != last:
+                ilog.info("索引暂停：%s", {"manual": "手动暂停", "qa": "正在问答", "busy": "用户在用电脑",
+                                         "battery": "使用电池"}.get(reason, reason))
                 self.w._set(state="paused", reason=reason)
                 last = reason
             time.sleep(0.5)
@@ -193,20 +202,34 @@ class IndexWorker:
             self._set(state="idle", folder=None, last={"folder": folder, "error": "找不到这个文件夹"})
             return
         total = sum(1 for _ in app.indexer.walk(path))
+        ilog.info("开始索引 %s（%d 个文件%s）", folder, total, "，后台自动更新" if background else "")
         self._set(state="running", reason=None, folder=folder, done=0, total=total, background=background)
 
         def on_progress(ev) -> None:
             self.state.update(done=ev.files_seen, file=Path(ev.path).name)
+            if ev.action == "failed":
+                ilog.warning("索引失败：%s：%s", ev.path, ev.detail)
+            elif ev.action == "skipped":
+                ilog.info("跳过：%s：%s", Path(ev.path).name, ev.detail)
+            else:
+                ilog.debug("%s %s", {"indexed": "已索引", "unchanged": "未变化", "moved": "改名/移动"}.get(ev.action, ev.action),
+                           Path(ev.path).name)
             self._emit_state()
 
         try:
             rep = app.indexer.index_folder(path, on_progress=on_progress, gate=_Gate(self, app, background))
             last = {"folder": folder, "indexed": rep.files_indexed, "failed": rep.files_failed,
                     "removed": rep.files_removed, "chunks": rep.chunks_added, "seconds": rep.seconds}
+            ilog.info("索引完成 %s：新索引 %d、失败 %d、删除 %d、新增文本块 %d（复用向量 %d）、用时 %.1f 秒"
+                      "（解析 %.1f 秒、向量 %.1f 秒）%s", folder, rep.files_indexed, rep.files_failed, rep.files_removed,
+                      rep.chunks_added, rep.chunks_reused, rep.seconds, rep.parse_seconds, rep.embed_seconds,
+                      "，切块参数变化已重新切块" if rep.rechunked else "")
         except Cancelled:
             last = {"folder": folder, "stopped": True}
+            ilog.info("已停止索引 %s", folder)
         except LkosError as e:
             last = {"folder": folder, "error": str(e)}
+            ilog.error("索引出错 %s：%s", folder, e)
         self._set(state="idle", reason=None, folder=None, done=0, total=0, file=None, last=last)
         self._emit({"type": "library_changed"})
 
@@ -222,6 +245,11 @@ class Bridge:
         self._opener = opener
         self._qa = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lkos-qa")
         self._app: App = self._qa.submit(lambda: _open(**kw)).result()
+        self._ring = setup_logging(self._app.home)
+        self._settings = self._load_settings()
+        set_level(self._settings["dev_mode"])
+        log.info("应用启动：数据目录 %s，问答模型 %s，检索策略 %s", self._app.home,
+                 self._app.cfg.tasks["knowledge_qa"].default_model, self._app.cfg.retrieval.strategy)
         self._cancel = threading.Event()
         self._busy = threading.Event()
         self._indexer = IndexWorker(lambda: App.open(**kw), self._emit, auto_refresh=auto_refresh)
@@ -260,8 +288,10 @@ class Bridge:
                               "chunks": s["chunks_total"]},
                     "models": models, "model": self._app.cfg.tasks["knowledge_qa"].default_model,
                     "history": self._app.repo.list_history(), "sources": self._app.repo.list_sources(),
-                    "index": self._indexer.state}
+                    "index": self._indexer.state, "settings": dict(self._settings)}
         out = self._call(run)
+        for m in out["models"]:
+            (log.info if m["ok"] else log.warning)("模型 %s：%s", m["ref"], m["message"] or ("就绪" if m["ok"] else "不可用"))
         if self._indexer._auto:
             self._qa.submit(lambda: self._indexer._enqueue_stale(self._app))
         return out
@@ -285,6 +315,17 @@ class Bridge:
 
         def on_context(ctx) -> None:
             sources[:] = ctx
+            dbg = self._app.retriever.last_debug
+            ms = int((time.perf_counter() - t0) * 1000)
+            log.info("检索 %d ms：问题语言 %s、模式 %s、策略 %s，送入 %d 个片段", ms, dbg.lang if dbg else "?",
+                     dbg.mode if dbg else "?", dbg.strategy if dbg else "?", len(ctx))
+            if dbg:
+                log.debug("关键词查询：%s；向量候选 %d、关键词候选 %d", dbg.fts_query or "（无）",
+                          len(dbg.vec_ids), len(dbg.fts_ids))
+            for i, c in enumerate(ctx, start=1):
+                loc = c.location.describe(c.file_type)
+                log.debug("  [%d] %s%s · %d 字 · 分数 %.4f", i, c.file_name, f" · {loc}" if loc else "", len(c.text),
+                          c.score or 0)
             self._emit({"type": "sources", "qid": qid, "ms": int((time.perf_counter() - t0) * 1000),
                         "sources": [chunk_dict(i, c) for i, c in enumerate(ctx, start=1)]})
 
@@ -294,14 +335,23 @@ class Bridge:
             self._emit({"type": "token", "qid": qid, "text": t})
 
         try:
+            log.info("提问：%s", question)
             ans: Answer = self._app.qa.ask(question, on_token=on_token, on_context=on_context)
             record = self._save(question, ans)
+            log.info("回答完成：首字 %s ms、共 %s ms、输入 %s / 输出 %s tokens、有效出处 %s、无效编号 %s%s",
+                     ans.ttft_ms, ans.latency_ms, ans.input_tokens, ans.output_tokens, record["cited"] or "无",
+                     ans.invalid_refs or "无", "，判定为没找到" if record["not_found"] else "")
+            if record["not_found"]:
+                log.warning("没找到答案：%s → %s", question, ans.text[:80])
             self._emit({"type": "done", "qid": qid, "record": record})
         except Cancelled:
+            log.info("已停止生成")
             self._emit({"type": "stopped", "qid": qid})
         except LkosError as e:
+            log.error("问答出错：%s", e)
             self._emit({"type": "error", "qid": qid, "message": str(e)})
         except Exception as e:  # noqa: BLE001 - 不让后台线程静默死掉
+            log.exception("问答出错")
             self._emit({"type": "error", "qid": qid, "message": f"出错了：{e}"})
         finally:
             self._busy.clear()
@@ -428,6 +478,51 @@ class Bridge:
     def stop_index(self) -> dict:
         self._indexer.cancel()
         return {"ok": True}
+
+    # ---------- 设置与日志（开发者模式） ----------
+    def _settings_path(self) -> Path:
+        return self._app.home / SETTINGS_FILE
+
+    def _load_settings(self) -> dict:
+        try:
+            data = json.loads(self._settings_path().read_text("utf-8"))
+            return {**DEFAULT_SETTINGS, **{k: v for k, v in data.items() if k in DEFAULT_SETTINGS}}
+        except (OSError, ValueError):
+            return dict(DEFAULT_SETTINGS)
+
+    def settings(self) -> dict:
+        return dict(self._settings)
+
+    def set_setting(self, key: str, value) -> dict:
+        if key not in DEFAULT_SETTINGS:
+            return {"error": f"没有这个设置：{key}"}
+        self._settings[key] = type(DEFAULT_SETTINGS[key])(value)
+        try:
+            self._settings_path().write_text(json.dumps(self._settings, ensure_ascii=False, indent=2), "utf-8")
+        except OSError as e:
+            log.warning("保存设置失败：%s", e)
+        if key == "dev_mode":
+            set_level(bool(value))
+            log.info("开发者模式已%s（日志级别：%s）", "开启" if value else "关闭", "调试" if value else "信息")
+        return dict(self._settings)
+
+    def logs(self, after: int = 0, level: str = "DEBUG") -> dict:
+        """增量拉取内存日志：after 为上次拿到的最大序号。"""
+        lines = self._ring.since(int(after or 0), LEVELS.get(str(level).upper(), 10))
+        return {"lines": lines, "last": self._ring.seq, "file": str(self._app.home / "logs" / "lkos.log")}
+
+    def calls(self, limit: int = 100) -> list[dict]:
+        """最近的模型调用（来自 call_logs 表）：首字、总耗时、token、内存、错误。"""
+        rows = self._call(lambda: self._app.repo.recent_calls(limit=int(limit)))
+        keep = ("ts", "task", "model", "ttft_ms", "latency_ms", "input_tokens", "output_tokens",
+                "mem_available_mb", "swap_used_mb", "error")
+        return [{k: r.get(k) for k in keep} for r in rows]
+
+    def open_logs_folder(self) -> dict:
+        folder = self._app.home / "logs"
+        folder.mkdir(parents=True, exist_ok=True)
+        problem = self._opener(str(folder))
+        return {"error": problem} if problem else {"ok": True}
 
     # ---------- 打开文件 ----------
     def open_file(self, path: str) -> dict:

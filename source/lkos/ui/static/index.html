@@ -28,6 +28,16 @@
       <div class="h"><span class="dot" aria-hidden="true"></span><span id="status-h">正在启动…</span></div>
       <div class="d" id="status-d"></div>
     </button>
+    <div class="side-foot">
+      <button type="button" class="side-item" id="btn-logs" hidden>
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M5 6l2 2-2 2M8.5 10.5H11"/></svg>
+        <span class="t">日志</span><span class="n" id="logs-badge"></span>
+      </button>
+      <button type="button" class="side-item" id="btn-settings">
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"/></svg>
+        <span class="t">设置</span>
+      </button>
+    </div>
   </nav>
 
   <main class="main" id="view-qa">
@@ -62,6 +72,34 @@
   </main>
 
   <aside class="aside" id="aside" aria-label="出处"></aside>
+
+  <main class="main" id="view-settings" hidden>
+    <div class="main-scroll"><div class="lib" id="settings"></div></div>
+  </main>
+
+  <main class="main" id="view-logs" hidden>
+    <div class="logs-head">
+      <h1>日志</h1>
+      <div class="seg" role="tablist" aria-label="日志类型">
+        <button type="button" role="tab" data-logtab="run" aria-pressed="true">运行日志</button>
+        <button type="button" role="tab" data-logtab="calls" aria-pressed="false">模型调用</button>
+      </div>
+      <span class="grow"></span>
+      <label class="hint" for="log-level">级别</label>
+      <select id="log-level" class="mini">
+        <option value="DEBUG">全部</option><option value="INFO">信息及以上</option>
+        <option value="WARNING">警告及以上</option><option value="ERROR">只看错误</option>
+      </select>
+      <label for="log-filter" class="sr-only">筛选</label>
+      <input id="log-filter" class="mini" placeholder="筛选关键词">
+      <label class="hint check"><input type="checkbox" id="log-auto" checked> 自动滚动</label>
+      <button type="button" class="btn small" id="log-copy">复制</button>
+      <button type="button" class="btn small" id="log-clear">清空显示</button>
+      <button type="button" class="btn small" id="log-folder">打开日志文件夹</button>
+    </div>
+    <div class="log-body" id="log-body" role="log" aria-live="off"></div>
+    <div class="log-foot hint" id="log-foot"></div>
+  </main>
 
   <main class="main" id="view-lib" hidden>
     <div class="main-scroll"><div class="lib" id="lib"></div></div>

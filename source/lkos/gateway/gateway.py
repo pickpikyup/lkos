@@ -14,11 +14,14 @@ from typing import Callable, Protocol
 
 import psutil
 
+from lkos.logs import get_logger
 from lkos.config import Config, ProviderConfig, split_model_ref
 from lkos.errors import ConfigError, EmbeddingMismatchError, LkosError, ModelUnavailableError, RemoteDisabledError
 from lkos.gateway.base import ChatOptions, ChatResult, TokenCallback
 from lkos.types import CallLog
 
+
+_rlog = get_logger("model")
 
 class CallLogger(Protocol):
     def log_call(self, entry: CallLog) -> None: ...
@@ -156,6 +159,13 @@ class ModelGateway:
         return out
 
     def _log(self, task: str, provider: str, model: str, **fields) -> None:
+        if fields.get("error") == "已停止生成":
+            _rlog.info("用户停止了 %s/%s 的生成", provider, model)
+        elif fields.get("error"):
+            _rlog.warning("模型调用失败 %s/%s（%s）：%s", provider, model, task, fields["error"])
+        elif task != "embed":
+            _rlog.debug("模型调用 %s/%s（%s）：%s", provider, model, task,
+                        "、".join(f"{k}={v}" for k, v in fields.items() if v is not None))
         if self.logger is None:
             return
         mem, swap = self.snapshot()

@@ -1,4 +1,4 @@
-"""打开应用窗口：lkos app（或双击 LKOS.app / LKOS.command）。
+"""打开应用窗口：lkos app（或双击 LKOS.app）。
 
 界面是一份本地 HTML（样式与脚本内联），用 macOS 自带的 WebKit 显示，不开网络端口、不联网。
 """
@@ -40,7 +40,7 @@ def run(home: Path | None = None, config_path: Path | None = None, debug: bool =
         import webview
     except ImportError as e:
         raise LkosError("没有安装界面组件 pywebview：在项目目录运行 .venv/bin/pip install pywebview "
-                        "（或双击 LKOS.command，会自动安装）") from e
+                        "（或双击 LKOS.app，会自动安装）") from e
     from lkos.ui.bridge import Bridge
 
     bridge = Bridge(home=home, config_path=config_path)

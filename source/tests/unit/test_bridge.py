@@ -114,3 +114,24 @@ def test_not_found_only_for_whole_answer(tmp_path, corpus, answer, expect):
         assert rec["not_found"] is expect
     finally:
         b._close()
+
+
+def test_dev_mode_setting_and_logs(bridge, corpus, tmp_path):
+    assert bridge.settings() == {"dev_mode": False}
+    assert bridge.set_setting("nope", 1)["error"]
+    assert bridge.set_setting("dev_mode", True)["dev_mode"] is True
+    assert bridge._load_settings()["dev_mode"] is True            # 写入了 data/ui-settings.json
+    start = bridge.logs()["last"]
+    bridge._call(lambda: bridge._app.indexer.index_folder(corpus))
+    bridge.ask("项目二期的预算上限是多少？")
+    assert wait_for(lambda: any(e["type"] == "done" for e in bridge._sent))
+    out = bridge.logs(start)
+    msgs = [x["msg"] for x in out["lines"]]
+    assert any(m.startswith("提问：") for m in msgs) and any(m.startswith("检索 ") for m in msgs)
+    assert any("回答完成" in m for m in msgs) and any("[1]" in m and "分数" in m for m in msgs)   # 调试级别：片段明细
+    assert out["file"].endswith("lkos.log") and out["last"] >= out["lines"][-1]["seq"]
+    assert bridge.logs(out["last"])["lines"] == []
+    assert all(x["level"] in ("WARNING", "ERROR") for x in bridge.logs(start, "WARNING")["lines"])
+    calls = bridge.calls(10)
+    assert calls and {"ttft_ms", "mem_available_mb", "error"} <= set(calls[0])
+    assert bridge.open_logs_folder() == {"ok": True}

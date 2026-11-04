@@ -1,20 +1,18 @@
 #!/bin/bash
-# 双击 LKOS.app 打开本地知识库窗口。日志写在 logs/app.log。
-DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+# 双击 LKOS.app 打开本地知识库窗口。日志在 data/logs/（应用里打开“开发者模式”也能看）。
+DIR="$(cd "$(dirname "$0")/../../.." && pwd)"   # 项目根目录
 cd "$DIR" || exit 1
-mkdir -p logs
-LOG="logs/app.log"
-if [ ! -x .venv/bin/lkos ]; then
-  osascript -e 'display alert "LKOS 还没有安装" message "请先在终端里运行项目目录下的 scripts/setup_mac.sh。"'
+mkdir -p data/logs
+LOG="data/logs/launcher.log"
+if [ ! -x .venv/bin/python ]; then
+  osascript -e 'display alert "LKOS 还没有安装" message "请先在终端里运行项目目录下的 source/scripts/setup_mac.sh。"'
   exit 1
 fi
-if ! .venv/bin/python -c "import webview" 2>/dev/null; then
-  osascript -e 'display notification "首次启动，正在安装窗口组件，大约需要一分钟…" with title "Local Knowledge OS"'
-  if ! scripts/install_ui.sh >> "$LOG" 2>&1; then
-    osascript -e 'display alert "安装窗口组件失败" message "请双击项目里的 LKOS.command 查看原因（多半是网络问题）。"'
-    exit 1
-  fi
+if ! source/scripts/install_ui.sh >> "$LOG" 2>&1; then
+  osascript -e 'display alert "启动准备失败" message "详情见项目里的 data/logs/launcher.log（多半是首次安装窗口组件时网络不通）。"'
+  exit 1
 fi
 pgrep -xq Ollama || pgrep -xq ollama || { open -a Ollama 2>/dev/null; sleep 3; }
 export PYTHONDONTWRITEBYTECODE=1
+echo "== $(date '+%F %T') 启动 ==" >> "$LOG"
 exec .venv/bin/lkos app >> "$LOG" 2>&1

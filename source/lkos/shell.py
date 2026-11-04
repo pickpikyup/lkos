@@ -1,6 +1,6 @@
 """交互式命令行应用：直接输入问题即可问答，斜杠命令管理文件夹、搜索、打开原文件。
 
-启动：在项目目录运行 ./lkos（或双击 LKOS.command）。
+启动：在终端运行 source/bin/lkos（不带参数）。
 """
 
 from __future__ import annotations
@@ -288,7 +288,7 @@ class Shell:
         bad = s["files_by_status"].get("failed", 0) + s["files_by_status"].get("skipped", 0)
         if bad:
             self.console.print(f"[yellow]{bad} 个文件没能索引（加密、扫描件或格式问题），"
-                               f"终端里运行 ./lkos status --failed 查看。[/]")
+                               f"终端里运行 source/bin/lkos status --failed 查看，或在应用的资料库页查看。[/]")
         for ref, ok, msg in self.a.gateway.check():
             self.console.print(f"{'[green]就绪[/]' if ok else '[red]不可用[/]'} {ref}  [dim]{msg}[/]", highlight=False)
 

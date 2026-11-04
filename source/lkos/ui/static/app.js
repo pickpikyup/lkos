@@ -6,6 +6,8 @@
   const S = {
     view: "qa", mode: "ask", models: [], model: "", history: [], sources: [], index: { state: "idle" },
     paused: false, cur: null, sel: null, lib: null, confirmRemove: null, problemsCount: 0,
+    settings: { dev_mode: false },
+    log: { tab: "run", after: 0, lines: [], level: "DEBUG", filter: "", file: "", warn: 0, calls: [] },
   };
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -77,10 +79,11 @@
     try {
       const b = await api("boot");
       S.models = b.models; S.model = b.model; S.history = b.history; S.sources = b.sources; S.index = b.index;
-      S.stats = b.stats;
+      S.stats = b.stats; S.settings = b.settings || S.settings;
     } catch (err) {
       S.bootError = String(err && err.message || err);
     }
+    applyDevMode();
     renderSide(); renderStatus(); renderQA(); renderAside();
     $("q").focus();
   }
@@ -431,11 +434,134 @@
 
   // ---------------- 资料库 ----------------
   function showView(v) {
+    if (v === "logs" && !S.settings.dev_mode) v = "settings";
     S.view = v;
     $("view-qa").hidden = v !== "qa"; $("aside").hidden = v !== "qa";
     $("view-lib").hidden = v !== "lib"; $("lib-aside").hidden = v !== "lib";
+    $("view-settings").hidden = v !== "settings"; $("view-logs").hidden = v !== "logs";
+    $("btn-settings").classList.toggle("active", v === "settings");
+    $("btn-logs").classList.toggle("active", v === "logs");
     if (v === "lib") { renderLib(); refreshLibrary(); }
+    if (v === "settings") renderSettings();
+    if (v === "logs") { renderLogs(); pollLogs(); }
     renderSide();
+  }
+
+  // ---------------- 设置 ----------------
+  function applyDevMode() {
+    $("btn-logs").hidden = !S.settings.dev_mode;
+    if (S.settings.dev_mode) startLogPolling(); else stopLogPolling();
+  }
+
+  function renderSettings() {
+    const on = !!S.settings.dev_mode;
+    const models = S.models.map((m) => `<span class="k">${esc(m.ref)}</span><span class="v">${m.ok ? "就绪" : "不可用"}${m.message ? "：" + esc(m.message) : ""}</span>`).join("");
+    $("settings").innerHTML = `<div class="lib-head"><h1>设置</h1></div>
+      <section class="setting">
+        <div class="txt"><div class="h" id="dev-label">开发者模式</div>
+          <div class="d">打开后左栏出现“日志”，可以实时查看运行日志（检索到哪些片段、各自分数、首字时间、token 数、错误）和每次模型调用的耗时与内存。
+          同时记录更详细的调试信息。日志只保存在本机的 data/logs/，不记录文档全文。</div></div>
+        <button type="button" class="switch" role="switch" aria-checked="${on}" aria-labelledby="dev-label" id="dev-switch"></button>
+      </section>
+      <section class="setting"><div class="txt"><div class="h">运行信息</div>
+        <div class="kv" style="margin-top:8px">${models}
+          <span class="k">日志文件</span><span class="v">${esc(S.log.file || "data/logs/lkos.log")}</span></div>
+        <div class="chips" style="margin-top:12px"><button type="button" class="btn small" id="settings-open-logs">打开日志文件夹</button></div>
+      </div></section>`;
+    $("dev-switch").addEventListener("click", async () => {
+      S.settings = await api("set_setting", "dev_mode", !on);
+      applyDevMode(); renderSettings();
+      toast(S.settings.dev_mode ? "开发者模式已打开，左栏可以看日志" : "开发者模式已关闭");
+    });
+    $("settings-open-logs").addEventListener("click", openLogsFolder);
+  }
+
+  async function openLogsFolder() {
+    const r = await api("open_logs_folder");
+    if (r.error) toast(r.error);
+  }
+
+  // ---------------- 日志 ----------------
+  let logTimer = null;
+  function startLogPolling() {
+    if (logTimer) return;
+    logTimer = setInterval(pollLogs, 1000);
+    pollLogs();
+  }
+  function stopLogPolling() { clearInterval(logTimer); logTimer = null; }
+
+  let logBusy = false;
+  async function pollLogs() {
+    const L = S.log;
+    if (logBusy) return;
+    logBusy = true;
+    try {
+      if (L.tab === "calls" && S.view === "logs") {
+        L.calls = await api("calls", 100);
+        renderLogs();
+        return;
+      }
+      const r = await api("logs", L.after, L.level);
+      L.file = r.file;
+      if (r.lines.length) {
+        L.lines.push(...r.lines);
+        if (L.lines.length > 3000) L.lines.splice(0, L.lines.length - 3000);
+        L.after = r.lines[r.lines.length - 1].seq;
+        if (S.view !== "logs") {
+          L.warn += r.lines.filter((x) => x.level === "WARNING" || x.level === "ERROR" || x.level === "CRITICAL").length;
+          $("logs-badge").textContent = L.warn ? String(L.warn) : "";
+        } else {
+          appendLogLines(r.lines);
+        }
+      }
+    } catch (e) { /* 窗口关闭或还没准备好 */ }
+    finally { logBusy = false; }
+  }
+
+  function logLineHTML(x) {
+    return `<div class="log-line lv-row-${x.level}"><span class="tm">${x.time}.${String(x.ms).padStart(3, "0")}</span>` +
+      `<span class="lv lv-${x.level}">${x.level === "WARNING" ? "WARN" : x.level}</span>` +
+      `<span class="lsrc" title="${esc(x.source)}">${esc(x.source)}</span><span class="msg">${esc(x.msg)}</span></div>`;
+  }
+
+  function matchFilter(x) {
+    const f = S.log.filter.trim().toLowerCase();
+    return !f || x.msg.toLowerCase().includes(f) || x.source.toLowerCase().includes(f);
+  }
+
+  function appendLogLines(lines) {
+    const body = $("log-body");
+    if (!body || S.log.tab !== "run") return;
+    const empty = body.querySelector(".log-empty");
+    if (empty) empty.remove();
+    body.insertAdjacentHTML("beforeend", lines.filter(matchFilter).map(logLineHTML).join(""));
+    while (body.children.length > 3000) body.firstChild.remove();
+    if ($("log-auto").checked) body.scrollTop = body.scrollHeight;
+    $("log-foot").textContent = `共 ${S.log.lines.length} 条 · 日志文件：${S.log.file}`;
+  }
+
+  function renderLogs() {
+    const L = S.log, body = $("log-body");
+    L.warn = 0; $("logs-badge").textContent = "";
+    document.querySelectorAll("[data-logtab]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.logtab === L.tab)));
+    ["log-level", "log-filter", "log-clear"].forEach((id) => { $(id).disabled = L.tab !== "run"; });
+    if (L.tab === "calls") {
+      const rows = L.calls.map((c) => `<tr><td>${esc((c.ts || "").replace("T", " ").slice(5, 19))}</td><td>${esc(c.task)}</td><td>${esc(c.model)}</td>
+        <td class="num">${c.ttft_ms != null ? (c.ttft_ms / 1000).toFixed(1) + " s" : "-"}</td>
+        <td class="num">${c.latency_ms != null ? (c.latency_ms / 1000).toFixed(1) + " s" : "-"}</td>
+        <td class="num">${c.input_tokens != null ? fmt(c.input_tokens) + " / " + fmt(c.output_tokens) : "-"}</td>
+        <td class="num">${c.mem_available_mb != null ? fmt(c.mem_available_mb) + " MB" : "-"}</td>
+        <td class="num">${c.swap_used_mb != null ? (c.swap_used_mb / 1024).toFixed(1) + " GB" : "-"}</td>
+        <td class="err">${esc(c.error || "")}</td></tr>`).join("");
+      body.innerHTML = L.calls.length ? `<table class="calls"><thead><tr><th>时间（UTC）</th><th>任务</th><th>模型</th><th>首字</th><th>总耗时</th><th>输入 / 输出 tokens</th><th>可用内存</th><th>交换区</th><th>错误</th></tr></thead><tbody>${rows}</tbody></table>`
+        : '<div class="log-empty">还没有模型调用记录。</div>';
+      $("log-foot").textContent = "最近 100 次模型调用（问答、计算向量），每秒刷新";
+      return;
+    }
+    const lines = L.lines.filter(matchFilter);
+    body.innerHTML = lines.length ? lines.map(logLineHTML).join("") : '<div class="log-empty">暂时没有日志。提一个问题或更新索引，这里会实时出现记录。</div>';
+    if ($("log-auto").checked) body.scrollTop = body.scrollHeight;
+    $("log-foot").textContent = `共 ${L.lines.length} 条 · 日志文件：${L.file}`;
   }
 
   function renderLib() {
@@ -554,6 +680,19 @@
     }
   });
 
+  $("btn-settings").addEventListener("click", () => showView("settings"));
+  $("btn-logs").addEventListener("click", () => showView("logs"));
+  document.querySelectorAll("[data-logtab]").forEach((b) => b.addEventListener("click", () => {
+    S.log.tab = b.dataset.logtab; renderLogs(); pollLogs();
+  }));
+  $("log-level").addEventListener("change", (e) => { S.log.level = e.target.value; S.log.after = 0; S.log.lines = []; renderLogs(); pollLogs(); });
+  $("log-filter").addEventListener("input", (e) => { S.log.filter = e.target.value; renderLogs(); });
+  $("log-clear").addEventListener("click", () => { S.log.lines = []; renderLogs(); });
+  $("log-copy").addEventListener("click", () => {
+    if (S.log.tab === "calls") return copy(JSON.stringify(S.log.calls, null, 2));
+    copy(S.log.lines.filter(matchFilter).map((x) => `${x.time}.${String(x.ms).padStart(3, "0")} ${x.level} ${x.source}: ${x.msg}`).join("\n"));
+  });
+  $("log-folder").addEventListener("click", openLogsFolder);
   $("status-card").addEventListener("click", () => (S.sources.length ? showView("lib") : addFolder()));
   $("btn-new").addEventListener("click", newQuestion);
   $("btn-add-side").addEventListener("click", addFolder);

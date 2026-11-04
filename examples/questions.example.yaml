@@ -1,9 +1,0 @@
-# 测试问题集示例。expected_files 写文件名，或相对路径的结尾部分；命中任意一个即算命中。
-- question: 项目二期的预算上限是多少？
-  expected_files: [项目计划书.docx, 评审会议纪要.pdf]
-- question: 评审会议是哪天召开的？
-  expected_files: [评审会议纪要.pdf]
-- question: What is the retention policy for logs?
-  expected_files: [security-policy.md]
-- question: Où se trouve la machine à café ?
-  expected_files: [fr/guide-accueil.md]

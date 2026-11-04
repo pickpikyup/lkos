@@ -17,16 +17,21 @@ KNOWN_PROVIDER_TYPES = {"ollama", "hermes", "fake"}
 REMOTE_PROVIDER_TYPES = {"hermes"}
 
 
-def default_home() -> Path:
-    """数据目录：优先环境变量 LKOS_HOME，否则为项目根目录下的 data/。
+def project_root() -> Path:
+    """项目根目录（LKOS.app 与 README.md 所在的文件夹）；代码在它下面的 source/lkos/。"""
+    here = Path(__file__).resolve()
+    for p in here.parents:
+        if (p / "LKOS.app").exists() or (p / ".git").exists():
+            return p
+    return here.parents[2]
 
-    设计文档原定 ~/Library/Application Support/LocalKnowledgeOS/；
-    POC 阶段按要求把所有数据留在项目文件夹内。
-    """
+
+def default_home() -> Path:
+    """数据目录：优先环境变量 LKOS_HOME，否则为项目根目录下的 data/（文档索引、问答记录、日志都在这里，不进 Git）。"""
     env = os.environ.get("LKOS_HOME")
     if env:
         return Path(env).expanduser().resolve()
-    return (Path(__file__).resolve().parent.parent / "data").resolve()
+    return (project_root() / "data").resolve()
 
 
 @dataclass
