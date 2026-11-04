@@ -70,7 +70,7 @@ fi
 echo "安装依赖（首次约 300 MB，下面会显示下载进度）…"
 if command -v uv >/dev/null; then
   [[ -x .venv/bin/python ]] || uv venv --python 3.11 .venv
-  uv pip install --python .venv/bin/python -e ".[test]"
+  uv pip install --python .venv/bin/python -e ".[test,ui]"
 else
   PY=""
   for c in /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11; do
@@ -78,7 +78,7 @@ else
   done
   [[ -n "$PY" ]] || die "需要 uv 或 Homebrew 的 Python 3.11+（macOS 自带 Python 不能加载 SQLite 扩展）。请执行：brew install uv"
   [[ -x .venv/bin/python ]] || "$PY" -m venv .venv
-  .venv/bin/pip install -e ".[test]"
+  .venv/bin/pip install -e ".[test,ui]"
 fi
 .venv/bin/python -c "import sqlite3, sqlite_vec; c = sqlite3.connect(':memory:'); c.enable_load_extension(True); sqlite_vec.load(c); print('sqlite-vec', c.execute('select vec_version()').fetchone()[0])" \
   || die "当前 Python 不能加载 sqlite-vec。"

@@ -22,13 +22,14 @@ class QAService:
 
     def ask(self, question: str, k: int | None = None, model_override: str | None = None,
             lang: str | None = "auto", on_token: TokenCallback | None = None,
-            mode: str | None = None, strategy: str | None = None) -> Answer:
+            mode: str | None = None, strategy: str | None = None, on_context=None) -> Answer:
+        """on_context(片段列表)：片段选好、开始生成之前调用，界面据此先显示找到的资料。"""
         if self.marker is None:
-            return self._ask(question, k, model_override, lang, on_token, mode, strategy)
+            return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context)
         with self.marker.active():
-            return self._ask(question, k, model_override, lang, on_token, mode, strategy)
+            return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context)
 
-    def _ask(self, question, k, model_override, lang, on_token, mode, strategy) -> Answer:
+    def _ask(self, question, k, model_override, lang, on_token, mode, strategy, on_context=None) -> Answer:
         question = question.strip()
         qlang = detect_lang(question)
         if strategy is None:
@@ -48,6 +49,8 @@ class QAService:
             context = expand_best(question, context, qlang, num_ctx, task.max_tokens,
                                   getattr(self.retriever, "neighbors", None), self.cfg.retrieval.neighbor_ratio)
 
+        if on_context is not None:
+            on_context(context)
         messages = build_messages(question, context, qlang)
         result, _ = self.gateway.chat(TASK, messages, model_override=model_override, on_token=on_token)
         text, citations, invalid = validate_citations(result.text, context)

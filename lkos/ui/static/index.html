@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local Knowledge OS</title>
+<style>/*APP_CSS*/</style>
+</head>
+<body>
+<div class="app">
+  <nav class="side" aria-label="问题与资料库">
+    <button class="btn-new" id="btn-new" type="button">
+      <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+      新问题<span class="kbd">⌘N</span>
+    </button>
+    <div class="side-scroll">
+      <div class="side-group" id="history"></div>
+      <div class="side-group">
+        <div class="side-label">资料库
+          <button type="button" id="btn-add-side" aria-label="添加文件夹">
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+          </button>
+        </div>
+        <div id="folders"></div>
+      </div>
+    </div>
+    <button type="button" class="status-card empty" id="status-card">
+      <div class="h"><span class="dot" aria-hidden="true"></span><span id="status-h">正在启动…</span></div>
+      <div class="d" id="status-d"></div>
+    </button>
+  </nav>
+
+  <main class="main" id="view-qa">
+    <div class="main-scroll" id="main-scroll">
+      <div class="col" id="qa-col"></div>
+    </div>
+    <div class="composer-wrap" id="composer-wrap">
+      <form class="composer" id="composer">
+        <label for="q" class="sr-only">问题</label>
+        <textarea id="q" rows="2" placeholder="问一个关于你资料的问题…"></textarea>
+        <div class="row">
+          <div class="seg" role="group" aria-label="模式">
+            <button type="button" data-mode="ask" aria-pressed="true">问答</button>
+            <button type="button" data-mode="search" aria-pressed="false">搜索</button>
+          </div>
+          <span class="hint">范围：全部资料</span>
+          <span class="grow"></span>
+          <span class="hint">回车发送 · Shift+回车换行</span>
+          <button type="submit" class="send" aria-label="发送">
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M4 7l4-4 4 4"/></svg>
+          </button>
+        </div>
+      </form>
+      <div class="generating" id="generating" hidden>
+        <span>回答生成中，可以先在右侧核对原文</span>
+        <button type="button" class="btn" id="btn-stop">
+          <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor"/></svg>
+          停止 <span class="hint">Esc</span>
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <aside class="aside" id="aside" aria-label="出处"></aside>
+
+  <main class="main" id="view-lib" hidden>
+    <div class="main-scroll"><div class="lib" id="lib"></div></div>
+  </main>
+  <aside class="aside" id="lib-aside" hidden aria-label="后台索引说明">
+    <h2>后台索引什么时候运行</h2>
+    <ul class="rules">
+      <li>你添加文件夹或点“立即更新”后马上开始</li>
+      <li>一提问就让路，答完自动继续</li>
+      <li>每周自动更新一次：在接通电源、2 分钟没用键盘鼠标时进行</li>
+      <li>随时可以暂停或关掉应用，下次打开接着做</li>
+    </ul>
+    <div class="src" style="cursor: default">索引和问答共用一块芯片和 8 GB 内存，同时运行只会互相拖慢，所以索引总是让问答先用。</div>
+  </aside>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+<script>/*APP_JS*/</script>
+</body>
+</html>

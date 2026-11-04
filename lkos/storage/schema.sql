@@ -104,3 +104,19 @@ CREATE TABLE IF NOT EXISTS call_logs (
     swap_used_mb      INTEGER,
     error             TEXT
 );
+
+
+-- 问答记录（应用界面的历史列表）；context_json 保存送入模型的片段，原文件变化后仍能回看当时的出处
+CREATE TABLE IF NOT EXISTS qa_history (
+    id            INTEGER PRIMARY KEY,
+    owner_id      TEXT NOT NULL DEFAULT 'local',
+    asked_at      TEXT NOT NULL,
+    question      TEXT NOT NULL,
+    answer        TEXT NOT NULL,
+    not_found     INTEGER NOT NULL DEFAULT 0,
+    context_json  TEXT NOT NULL DEFAULT '[]',
+    cited_json    TEXT NOT NULL DEFAULT '[]',
+    model         TEXT,
+    ttft_ms       INTEGER,
+    latency_ms    INTEGER
+);

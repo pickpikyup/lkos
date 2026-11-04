@@ -16,7 +16,8 @@ SCHEMA_VERSION = "2"
 def connect(db_path: Path | str) -> sqlite3.Connection:
     if str(db_path) != ":memory:":
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), isolation_level=None)  # 手动管理事务
+    # timeout：应用里问答与后台索引各用一个连接，写入冲突时最多等 15 秒
+    conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=15)  # 手动管理事务
     conn.row_factory = sqlite3.Row
     try:
         conn.enable_load_extension(True)

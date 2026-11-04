@@ -31,3 +31,7 @@ class EmbeddingMismatchError(LkosError):
 
 class SchemaVersionError(LkosError):
     """数据库是旧版本格式，需要重建索引。"""
+
+
+class Cancelled(LkosError):
+    """用户中途停止（停止生成、停止索引）。"""

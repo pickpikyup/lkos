@@ -91,6 +91,28 @@ class Repository:
         self.prune_vectors()
         return len(ids)
 
+    # ---------- 问答记录 ----------
+    def add_history(self, question: str, answer: str, not_found: bool, context_json: str, cited_json: str,
+                    model: str | None, ttft_ms: int | None, latency_ms: int | None) -> int:
+        cur = self.conn.execute(
+            """INSERT INTO qa_history(owner_id, asked_at, question, answer, not_found, context_json, cited_json,
+                                      model, ttft_ms, latency_ms) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (self.owner_id, now_iso(), question, answer, int(not_found), context_json, cited_json, model,
+             ttft_ms, latency_ms))
+        return int(cur.lastrowid)
+
+    def list_history(self, limit: int = 200) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT id, asked_at, question, not_found FROM qa_history ORDER BY id DESC LIMIT ?", (limit,))
+        return [dict(r) for r in rows]
+
+    def get_history(self, history_id: int) -> dict | None:
+        row = self.conn.execute("SELECT * FROM qa_history WHERE id = ?", (history_id,)).fetchone()
+        return dict(row) if row else None
+
+    def delete_history(self, history_id: int) -> None:
+        self.conn.execute("DELETE FROM qa_history WHERE id = ?", (history_id,))
+
     # ---------- 文件 ----------
     @staticmethod
     def _file(row: sqlite3.Row) -> FileRecord:

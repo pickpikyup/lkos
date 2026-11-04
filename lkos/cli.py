@@ -63,6 +63,17 @@ def shell() -> None:
     raise typer.Exit()
 
 
+@app.command("app")
+def app_cmd(debug: bool = typer.Option(False, "--debug", help="打开网页检查器（排查界面问题）")):
+    """打开独立窗口应用（问答、搜索、资料库）。"""
+    from lkos.ui.window import run
+
+    try:
+        run(home=state.home, config_path=state.config, debug=debug)
+    except LkosError as e:
+        fail(e)
+
+
 # ---------------- source / update ----------------
 @source_app.command("add")
 def source_add(folder: Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True,
