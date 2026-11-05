@@ -14,6 +14,7 @@ from lkos.qa.service import QAService
 from lkos.qa.summarize import Summarizer
 from lkos.qa.extract import Extractor
 from lkos.qa.analysis import Analyzer
+from lkos.qa.tags import Tagger
 from lkos.retrieval.retriever import Retriever
 from lkos.storage.db import connect, init_schema
 from lkos.storage.repository import Repository
@@ -35,6 +36,7 @@ class App:
     summarizer: Summarizer = None
     extractor: Extractor = None
     analyzer: Analyzer = None
+    tagger: Tagger = None
 
     @classmethod
     def open(cls, home: Path | None = None, config_path: Path | None = None,
@@ -60,6 +62,7 @@ class App:
             summarizer=Summarizer(cfg, repo, gateway, marker=marker),
             extractor=Extractor(cfg, repo, retriever, gateway, marker=marker),
             analyzer=Analyzer(cfg, retriever, gateway, marker=marker),
+            tagger=Tagger(cfg, repo, gateway),   # 后台任务，不占用“正在问答”标记
         )
 
     def index_gate(self, on_pause=None, **probes) -> IndexGate:

@@ -77,6 +77,7 @@ class Repository:
         """来源文件夹及其文件数、文本块数、最近一次索引时间。"""
         rows = self.conn.execute(
             """SELECT s.id, s.path, s.refresh, s.exclude_json, s.ocr,
+                      (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id AND f.tagged_at IS NOT NULL) AS tagged,
                       (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id) AS files,
                       (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id AND f.status = 'failed') AS failed,
                       (SELECT COUNT(*) FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.source_id = s.id) AS chunks,
@@ -214,7 +215,8 @@ class Repository:
                  source_id = excluded.source_id, file_type = excluded.file_type,
                  content_hash = excluded.content_hash, size_bytes = excluded.size_bytes,
                  mtime = excluded.mtime, status = excluded.status, error = excluded.error,
-                 chunk_count = excluded.chunk_count, indexed_at = excluded.indexed_at""",
+                 chunk_count = excluded.chunk_count, indexed_at = excluded.indexed_at,
+                 tagged_at = CASE WHEN files.content_hash = excluded.content_hash THEN files.tagged_at END""",
             (source_id, self.owner_id, info.path, info.file_type, info.content_hash, info.size_bytes,
              info.mtime, status, error, chunk_count, now_iso(precise=True)),
         )
@@ -310,6 +312,7 @@ class Repository:
         with self.transaction():
             self._delete_chunks_of(file_ids)
             marks = ",".join("?" * len(file_ids))
+            self.conn.execute(f"DELETE FROM file_tags WHERE file_id IN ({marks})", list(file_ids))
             self.conn.execute(f"DELETE FROM files WHERE id IN ({marks})", list(file_ids))
 
     def files_of_source(self, source_id: int) -> list[FileRecord]:
@@ -454,6 +457,57 @@ class Repository:
         marks = ",".join("?" * len(chunk_ids))
         rows = self.conn.execute(f"SELECT id, file_id FROM chunks WHERE id IN ({marks})", list(chunk_ids)).fetchall()
         return {r["id"]: r["file_id"] for r in rows}
+
+    # ---------- 标签 ----------
+    def all_tags(self, limit: int = 200) -> list[dict]:
+        """所有标签及使用它的文件数，常用的在前。"""
+        rows = self.conn.execute(
+            """SELECT t.tag, COUNT(*) AS files, SUM(t.origin = 'user') AS user_files FROM file_tags t
+               JOIN files f ON f.id = t.file_id GROUP BY t.tag ORDER BY files DESC, t.tag LIMIT ?""", (limit,))
+        return [dict(r) for r in rows]
+
+    def tags_of(self, path: str) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT t.tag, t.origin FROM file_tags t JOIN files f ON f.id = t.file_id WHERE f.path = ?
+               ORDER BY t.origin DESC, t.rowid""", (path,))
+        return [dict(r) for r in rows]
+
+    def add_tag(self, file_id: int, tag: str, origin: str = "user") -> None:
+        self.conn.execute(
+            """INSERT INTO file_tags(file_id, tag, origin) VALUES (?, ?, ?)
+               ON CONFLICT(file_id, tag) DO UPDATE SET origin = CASE WHEN excluded.origin = 'user' THEN 'user'
+               ELSE file_tags.origin END""", (int(file_id), tag, origin))
+
+    def remove_tag(self, file_id: int, tag: str) -> None:
+        self.conn.execute("DELETE FROM file_tags WHERE file_id = ? AND tag = ?", (int(file_id), tag))
+
+    def set_model_tags(self, file_id: int, tags: Sequence[str]) -> None:
+        """替换模型生成的标签（用户手动加的保留），并记下生成时间。"""
+        with self.transaction():
+            self.conn.execute("DELETE FROM file_tags WHERE file_id = ? AND origin = 'model'", (int(file_id),))
+            for t in tags:
+                self.add_tag(file_id, t, "model")
+            self.conn.execute("UPDATE files SET tagged_at = ? WHERE id = ?", (now_iso(), int(file_id)))
+
+    def files_to_tag(self, source_id: int | None = None, limit: int | None = None) -> list[FileRecord]:
+        """已索引、还没自动生成标签（或内容变化后需要重新生成）的文件，最近修改的在前。"""
+        sql = "SELECT * FROM files WHERE status = 'indexed' AND tagged_at IS NULL"
+        args: list = []
+        if source_id is not None:
+            sql += " AND source_id = ?"
+            args.append(int(source_id))
+        sql += " ORDER BY mtime DESC"
+        if limit:
+            sql += " LIMIT ?"
+            args.append(int(limit))
+        return [self._file(r) for r in self.conn.execute(sql, args)]
+
+    def tag_progress(self, source_id: int) -> tuple[int, int]:
+        """（已生成标签的文件数，已索引文件数）。"""
+        r = self.conn.execute(
+            """SELECT SUM(tagged_at IS NOT NULL) AS done, COUNT(*) AS total FROM files
+               WHERE source_id = ? AND status = 'indexed'""", (int(source_id),)).fetchone()
+        return int(r["done"] or 0), int(r["total"] or 0)
 
     # ---------- 索引运行 ----------
     def start_run(self, source_id: int) -> IndexRun:

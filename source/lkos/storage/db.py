@@ -66,6 +66,9 @@ ADDED_COLUMNS = {
         ("exclude_json", "TEXT NOT NULL DEFAULT '{}'"),      # {"dirs": [...], "exts": [...]}
         ("ocr", "INTEGER NOT NULL DEFAULT 0"),
     ],
+    "files": [
+        ("tagged_at", "TEXT"),                                # 自动生成标签的时间；内容变化后清空，重新生成
+    ],
     "qa_history": [
         ("kind", "TEXT NOT NULL DEFAULT 'qa'"),              # qa / summary / extract / analysis
         ("extra_json", "TEXT NOT NULL DEFAULT '{}'"),        # 提取的表格、深度分析的子问题等

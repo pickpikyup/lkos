@@ -38,7 +38,7 @@ log = get_logger("app")
 ilog = get_logger("index")
 LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
 SETTINGS_FILE = "ui-settings.json"
-DEFAULT_SETTINGS = {"dev_mode": False}
+DEFAULT_SETTINGS = {"dev_mode": False, "auto_tags": True}
 
 AUTO_CHECK_SECONDS = 600       # 每 10 分钟看一次有没有到期的文件夹
 
@@ -109,8 +109,9 @@ class IndexWorker:
     """后台索引线程：队列里的文件夹逐个索引，进度推给界面。"""
 
     def __init__(self, open_app: Callable[[], App], emit: Callable[[dict], None], auto_refresh: bool = True,
-                 home: Path | None = None):
+                 home: Path | None = None, auto_tags: Callable[[], bool] = lambda: False):
         self._open_app = open_app
+        self._auto_tags = auto_tags
         self._ilock = index_lock(home, "app") if home is not None else None
         self._emit = emit
         self._jobs: queue.Queue = queue.Queue()
@@ -127,15 +128,22 @@ class IndexWorker:
         self._thread.start()
 
     # ---------- 对外 ----------
-    def enqueue(self, folder: str, background: bool = False) -> bool:
+    def enqueue(self, folder: str, background: bool = False, kind: str = "index") -> bool:
+        """kind：index（更新索引）/ tags（给还没有标签的文件生成标签，总在后台闲时进行）。"""
+        key = folder if kind == "index" else f"{kind}:{folder}"
         with self._lock:
-            if folder in self._queued or (self.state["folder"] == folder and self.state["state"] != "idle"):
+            busy = self.state["folder"] == folder and self.state.get("kind", "index") == kind and self.state["state"] != "idle"
+            if key in self._queued or busy:
                 return False
-            self._queued.append(folder)
-            self.state["queued"] = len(self._queued)
-        self._jobs.put((folder, background))
+            self._queued.append(key)
+            self.state["queued"] = sum(1 for k in self._queued if not k.startswith("tags:"))
+        self._jobs.put((key, folder, background, kind))
         self._emit_state(force=True)
         return True
+
+    def _index_waiting(self) -> bool:
+        with self._lock:
+            return any(not k.startswith("tags:") for k in self._queued)
 
     def pause(self) -> None:
         self._paused.set()
@@ -148,8 +156,9 @@ class IndexWorker:
     def cancel(self, folder: str | None = None) -> None:
         """停止当前索引（folder 给定时只在正在索引它时停止），并从队列里去掉 folder。"""
         with self._lock:
-            if folder is not None and folder in self._queued:
-                self._queued.remove(folder)
+            for key in (folder, f"tags:{folder}"):
+                if folder is not None and key in self._queued:
+                    self._queued.remove(key)
             current = self.state["folder"]
         if folder is None or folder == current:
             self._cancel.set()
@@ -186,13 +195,16 @@ class IndexWorker:
                     continue
                 if job is None:
                     break
-                folder, background = job
+                key, folder, background, kind = job
                 with self._lock:
-                    if folder not in self._queued:
+                    if key not in self._queued:
                         continue  # 已被移除
-                    self._queued.remove(folder)
-                    self.state["queued"] = len(self._queued)
-                self._index(app, folder, background)
+                    self._queued.remove(key)
+                    self.state["queued"] = sum(1 for k in self._queued if not k.startswith("tags:"))
+                if kind == "tags":
+                    self._tags(app, folder, background)
+                else:
+                    self._index(app, folder, background)
         finally:
             app.close()
 
@@ -208,7 +220,7 @@ class IndexWorker:
             return
         total = sum(1 for _ in app.indexer.walk(path))
         ilog.info("开始索引 %s（%d 个文件%s）", folder, total, "，后台自动更新" if background else "")
-        self._set(state="running", reason=None, folder=folder, done=0, total=total, background=background)
+        self._set(state="running", reason=None, folder=folder, done=0, total=total, background=background, kind="index")
 
         def on_progress(ev) -> None:
             self.state.update(done=ev.files_seen, file=Path(ev.path).name)
@@ -247,6 +259,42 @@ class IndexWorker:
                 self._ilock.release()
         self._set(state="idle", reason=None, folder=None, done=0, total=0, file=None, last=last)
         self._emit({"type": "library_changed"})
+        if "indexed" in last and self._auto_tags():
+            self.enqueue(folder, background=True, kind="tags")
+
+    def _tags(self, app: App, folder: str, background: bool = True) -> None:
+        """后台闲时给文件生成标签；有新的索引任务排队时先让给它，之后接着做。"""
+        self._cancel.clear()
+        src = app.repo.source_settings(folder)
+        if src is None:
+            return
+        todo = len(app.repo.files_to_tag(src["id"]))
+        if not todo:
+            return
+        ilog.info("开始生成标签 %s（%d 个文件）", folder, todo)
+        self._set(state="running", reason=None, folder=folder, done=0, total=todo, background=background, kind="tags")
+
+        def on_progress(i: int, n: int, path: str) -> None:
+            self.state.update(done=i, total=n, file=Path(path).name)
+            self._emit_state()
+
+        preempted = False
+        try:
+            n = app.tagger.run(src["id"], gate=_Gate(self, app, background), on_progress=on_progress,
+                               cancelled=lambda: self._cancel.is_set() or self._index_waiting())
+            ilog.info("标签生成完成 %s：%d 个文件", folder, n)
+            last = {"folder": folder, "tagged": n}
+        except Cancelled:
+            preempted = not self._cancel.is_set()
+            last = {"folder": folder, "stopped": True}
+            ilog.info("暂停生成标签 %s%s", folder, "（先更新索引）" if preempted else "")
+        except LkosError as e:
+            last = {"folder": folder, "error": str(e)}
+            ilog.error("生成标签出错 %s：%s", folder, e)
+        self._set(state="idle", reason=None, folder=None, done=0, total=0, file=None, kind=None, last_tags=last)
+        self._emit({"type": "library_changed"})
+        if preempted:
+            self.enqueue(folder, background=True, kind="tags")
 
 
 class Bridge:
@@ -271,7 +319,7 @@ class Bridge:
         self._applock = app_lock(self._app.home)
         self._applock.acquire()
         self._indexer = IndexWorker(lambda: App.open(**kw), self._emit, auto_refresh=auto_refresh,
-                                    home=self._app.home)
+                                    home=self._app.home, auto_tags=lambda: bool(self._settings.get("auto_tags")))
         self._sent: list[dict] = []   # 窗口还没准备好时（以及测试中）记下推送的事件
 
     # ---------- 内部 ----------
@@ -545,7 +593,7 @@ class Bridge:
                     "stats": {"sources": s["sources"], "files": s["files_by_status"].get("indexed", 0),
                               "chunks": s["chunks_total"]},
                     "index": self._indexer.state, "paused": self._indexer._paused.is_set(),
-                    "ocr_available": ocr_available()}
+                    "ocr_available": ocr_available(), "tags": self._app.repo.all_tags(60)}
         return self._call(run)
 
     def choose_folder(self) -> dict:
@@ -603,6 +651,38 @@ class Bridge:
             self._indexer.enqueue(after["path"])
         self._emit({"type": "library_changed"})
         return {**after, "reindex": reindex}
+
+    # ---------- 标签 ----------
+    def tags(self, limit: int = 200) -> list[dict]:
+        return self._call(lambda: self._app.repo.all_tags(int(limit)))
+
+    def file_tags(self, path: str) -> list[dict]:
+        return self._call(lambda: self._app.repo.tags_of(str(path)))
+
+    def add_tag(self, path: str, tag: str) -> dict:
+        from lkos.qa.tags import normalize_tag
+
+        t = normalize_tag(str(tag or ""))
+        if not t:
+            return {"error": "标签要 1–16 个字"}
+        f = self._call(lambda: self._app.repo.get_file(str(path)))
+        if f is None:
+            return {"error": "这个文件还没有索引"}
+        self._call(lambda: self._app.repo.add_tag(f.id, t, "user"))
+        log.info("添加标签：%s → %s", Path(path).name, t)
+        return {"ok": True, "tags": self.file_tags(path)}
+
+    def remove_tag(self, path: str, tag: str) -> dict:
+        f = self._call(lambda: self._app.repo.get_file(str(path)))
+        if f is None:
+            return {"error": "这个文件还没有索引"}
+        self._call(lambda: self._app.repo.remove_tag(f.id, str(tag)))
+        log.info("删除标签：%s → %s", Path(path).name, tag)
+        return {"ok": True, "tags": self.file_tags(path)}
+
+    def generate_tags(self, folder: str) -> dict:
+        """立即给这个文件夹里还没有标签的文件生成标签（不等电脑空闲）。"""
+        return {"ok": self._indexer.enqueue(str(folder), background=False, kind="tags")}
 
     # ---------- 后台服务（关掉窗口后继续索引） ----------
     def daemon_status(self) -> dict:
@@ -674,6 +754,9 @@ class Bridge:
             self._settings_path().write_text(json.dumps(self._settings, ensure_ascii=False, indent=2), "utf-8")
         except OSError as e:
             log.warning("保存设置失败：%s", e)
+        if key == "auto_tags" and value:
+            for src in self._call(self._app.repo.list_sources):
+                self._indexer.enqueue(src["path"], background=True, kind="tags")
         if key == "dev_mode":
             set_level(bool(value))
             log.info("开发者模式已%s（日志级别：%s）", "开启" if value else "关闭", "调试" if value else "信息")

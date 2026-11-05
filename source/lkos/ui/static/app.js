@@ -7,7 +7,7 @@
     view: "qa", mode: "ask", models: [], model: "", history: [], sources: [], index: { state: "idle" },
     paused: false, cur: null, sel: null, lib: null, confirmRemove: null, problemsCount: 0, libEdit: null,
     settings: { dev_mode: false },
-    scope: { source_ids: [], file_types: [], days: 0, path: null }, scopeOpen: false, followUp: null,
+    scope: { source_ids: [], file_types: [], days: 0, path: null, tags: [] }, scopeOpen: false, followUp: null, tags: [],
     log: { tab: "run", after: 0, lines: [], level: "DEBUG", filter: "", file: "", warn: 0, calls: [] },
   };
   const $ = (id) => document.getElementById(id);
@@ -148,7 +148,9 @@
     const card = $("status-card"), i = S.index || {};
     const name = i.folder ? i.folder.split("/").filter(Boolean).pop() : "";
     let cls = "idle", h = "索引已是最新", d = "按各文件夹的设置自动更新";
-    if (i.state === "running") {
+    if (i.state === "running" && i.kind === "tags") {
+      cls = "running"; h = "正在生成标签"; d = `${name} · ${fmt(i.done)} / ${fmt(i.total)} 个文件`;
+    } else if (i.state === "running") {
       cls = "running"; h = "后台索引中"; d = `${name} · ${fmt(i.done)} / ${fmt(i.total)} 个文件`;
     } else if (i.state === "paused") {
       cls = "paused"; h = "后台索引已暂停"; d = REASON[i.reason] || "";
@@ -176,6 +178,7 @@
     if (sc.source_ids.length) d.source_ids = sc.source_ids.slice();
     if (sc.file_types.length) d.file_types = TYPES.filter((t) => sc.file_types.includes(t[0])).flatMap((t) => t[2]);
     if (sc.days) d.since = Date.now() / 1000 - sc.days * 86400;
+    if (sc.tags.length) d.tags = sc.tags.slice();
     return Object.keys(d).length ? d : null;
   }
 
@@ -195,6 +198,7 @@
       const hit = DAYS.find((x) => x[0] && Math.abs(x[0] - days) <= 1);
       parts.push(hit ? hit[1] : `近 ${days} 天`);
     }
+    if (sc.tags && sc.tags.length) parts.push("标签 " + sc.tags.join("、"));
     return parts.join(" · ") || "全部资料";
   }
 
@@ -213,6 +217,7 @@
     } else {
       h += `<div><h3>文件夹</h3><div class="opts">${S.sources.length ? S.sources.map((s) => `<label><input type="checkbox" data-scope-src="${s.id}"${sc.source_ids.includes(s.id) ? " checked" : ""}><span class="p" title="${esc(s.path)}">${esc(baseName(s.path))}</span></label>`).join("") : '<span class="hint">还没有添加文件夹</span>'}</div></div>
         <div><h3>文件类型</h3><div class="opts inline">${TYPES.map((t) => `<label><input type="checkbox" data-scope-type="${t[0]}"${sc.file_types.includes(t[0]) ? " checked" : ""}>${t[1]}</label>`).join("")}</div></div>
+        ${S.tags.length || sc.tags.length ? `<div><h3>标签</h3><div class="opts inline">${[...new Set([...sc.tags, ...S.tags.slice(0, 24).map((t) => t.tag)])].map((t) => `<label><input type="checkbox" data-scope-tag="${esc(t)}"${sc.tags.includes(t) ? " checked" : ""}>${esc(t)}</label>`).join("")}</div></div>` : ""}
         <div><h3>修改时间</h3><div class="opts inline">${DAYS.map((x) => `<label><input type="radio" name="scope-days" data-scope-days="${x[0]}"${sc.days === x[0] ? " checked" : ""}>${x[1]}</label>`).join("")}</div></div>
         <div class="hint">不勾选表示不限。想只问一份文件：在右侧出处里点“只问这份文件”。</div>`;
     }
@@ -221,7 +226,7 @@
   }
 
   function setScopeFile(path) {
-    S.scope = { source_ids: [], file_types: [], days: 0, path };
+    S.scope = { source_ids: [], file_types: [], days: 0, path, tags: [] };
     renderScope();
   }
 
@@ -466,6 +471,7 @@
         h += `<div class="src on" aria-current="true">
           <div class="top"><span class="num">[${s.n}]</span><span class="name">${esc(s.file)}</span></div>
           ${s.loc ? `<div class="loc">${esc(s.loc)}</div>` : ""}
+          <div class="src-tags" id="src-tags" data-path="${esc(s.path)}"></div>
           <div class="body">${highlight(s.text, answer, s.n)}</div>
           <div class="acts">
             <button type="button" class="btn primary" data-open="${esc(s.path)}">${s.type === "pdf" && s.page ? `打开（第 ${s.page} 页）` : "打开原文件"}</button>
@@ -484,6 +490,17 @@
       }
     }
     a.innerHTML = h;
+    loadSrcTags();
+  }
+
+  async function loadSrcTags(list) {
+    const el = $("src-tags");
+    if (!el) return;
+    const path = el.dataset.path;
+    if (!list) { try { list = await api("file_tags", path); } catch (e) { return; } }
+    if (!$("src-tags") || $("src-tags").dataset.path !== path) return;
+    $("src-tags").innerHTML = list.map((t) => `<span class="tag${t.origin === "user" ? " user" : ""}" title="${t.origin === "user" ? "手动添加" : "自动生成"}">${esc(t.tag)}<button type="button" data-tag-remove="${esc(t.tag)}" aria-label="删除标签 ${esc(t.tag)}">×</button></span>`).join("") +
+      `<form class="tag-add" data-tag-add="1"><label class="sr-only" for="tag-input">添加标签</label><input id="tag-input" maxlength="16" placeholder="＋ 标签"></form>`;
   }
 
   function select(n) {
@@ -668,6 +685,12 @@
           同时记录更详细的调试信息。日志只保存在本机的 data/logs/，不记录文档全文。</div></div>
         <button type="button" class="switch" role="switch" aria-checked="${on}" aria-labelledby="dev-label" id="dev-switch"></button>
       </section>
+      <section class="setting">
+        <div class="txt"><div class="h" id="tags-label">自动生成标签</div>
+          <div class="d">索引完成后，在电脑空闲时让模型读每份文件的开头，给出 3–5 个主题标签。提问时可以按标签限定范围；出处卡片里也可以手动加、删标签。
+          每份文件大约 3–8 秒，资料多时需要较长时间，问答时自动让路。</div></div>
+        <button type="button" class="switch" role="switch" aria-checked="${!!S.settings.auto_tags}" aria-labelledby="tags-label" id="tags-switch"></button>
+      </section>
       <section class="setting" id="daemon-setting" hidden></section>
       <section class="setting"><div class="txt"><div class="h">运行信息</div>
         <div class="kv" style="margin-top:8px">${models}
@@ -680,6 +703,11 @@
       toast(S.settings.dev_mode ? "开发者模式已打开，左栏可以看日志" : "开发者模式已关闭");
     });
     $("settings-open-logs").addEventListener("click", openLogsFolder);
+    $("tags-switch").addEventListener("click", async () => {
+      S.settings = await api("set_setting", "auto_tags", !S.settings.auto_tags);
+      renderSettings();
+      toast(S.settings.auto_tags ? "已打开：空闲时自动生成标签" : "已关闭自动生成标签");
+    });
     renderDaemon();
   }
 
@@ -810,7 +838,7 @@
       const active = i.folder === s.path && (i.state === "running" || i.state === "paused");
       const last = s.last_indexed ? new Date(s.last_indexed).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : null;
       let state;
-      if (active) state = `<span class="state" style="color:var(--run-ink)">${s.last_indexed ? "更新中" : "首次索引中"}</span>`;
+      if (active) state = `<span class="state" style="color:var(--run-ink)">${i.kind === "tags" ? "生成标签中" : s.last_indexed ? "更新中" : "首次索引中"}</span>`;
       else if (!s.last_indexed) state = `<span class="state" style="color:var(--warn-ink)"><span class="dot" style="background:var(--warn-dot)"></span>还没索引完</span>`;
       else state = `<span class="state" style="color:var(--ok-ink)"><span class="dot" style="background:var(--ok-dot)"></span>已是最新</span>`;
       h += `<section class="folder" aria-label="${esc(name)}"><div class="row"><h2>${esc(name)}</h2><span class="path">${esc(s.path)}</span><span class="grow"></span>${state}</div>`;
@@ -828,7 +856,8 @@
           <span>${last ? "上次更新 " + esc(last) : "下次打开或空闲时继续"}</span><span>${REFRESH_LABEL[s.refresh] || "每周自动更新"}</span>
           ${s.exclude.patterns.length ? `<span title="${esc(s.exclude.patterns.join("、"))}">排除 ${s.exclude.patterns.length} 条规则</span>` : ""}
           ${s.exclude.types.length ? `<span>不索引 ${SKIP_TYPES.filter((t) => t[2].some((x) => s.exclude.types.includes(x))).map((t) => t[1]).join("、")}</span>` : ""}
-          ${s.ocr ? "<span>扫描件文字识别：开</span>" : ""}</div>`;
+          ${s.ocr ? "<span>扫描件文字识别：开</span>" : ""}
+          ${s.files ? `<span>标签 ${fmt(s.tagged)} / ${fmt(s.files - s.failed)} 个文件</span>` : ""}</div>`;
       }
       if (S.libEdit === s.id) h += folderSettingsHTML(s, lib.ocr_available);
       const confirming = S.confirmRemove === s.id;
@@ -836,10 +865,15 @@
         <span class="grow"></span>
         ${active ? (i.state === "paused" && i.reason === "manual" ? '<button type="button" class="btn small" data-action="resume">继续</button>' : '<button type="button" class="btn small" data-action="pause">暂停</button>') + '<button type="button" class="btn small" data-action="stop-index">停止</button>'
           : `<button type="button" class="btn small" data-update="${esc(s.path)}">立即更新</button>`}
+        ${!active && s.files && s.tagged < s.files - s.failed ? `<button type="button" class="btn small" data-gen-tags="${esc(s.path)}">生成标签</button>` : ""}
         <button type="button" class="btn small" data-folder-settings="${s.id}" aria-expanded="${S.libEdit === s.id}">设置</button>
         ${confirming ? `<span class="sub">只删除索引，不动原文件</span><button type="button" class="btn small danger" data-remove-yes="${s.id}">确认移除</button><button type="button" class="btn small" data-action="remove-no">取消</button>`
           : `<button type="button" class="btn small danger" data-remove="${s.id}">移除</button>`}
         </div></section>`;
+    }
+    if (lib.tags && lib.tags.length) {
+      h += `<section aria-label="标签" style="display:flex;flex-direction:column;gap:8px"><h2 class="sec-title">标签（点一个，只在这些文件里提问）</h2>
+        <div class="chips">${lib.tags.slice(0, 60).map((t) => `<button type="button" class="tag-chip" data-tag-filter="${esc(t.tag)}">${esc(t.tag)}<span class="n">${fmt(t.files)}</span></button>`).join("")}</div></section>`;
     }
     if (lib.problems.length) {
       h += `<section aria-label="需要处理的文件" style="display:flex;flex-direction:column;gap:8px"><h2 class="sec-title">需要处理的文件（${lib.problems.length}）</h2><div class="problems">`;
@@ -931,7 +965,17 @@
     if (d.summarize != null) return summarizeFile(d.summarize);
     if (d.scopeFile != null) { setScopeFile(d.scopeFile); if (S.mode !== "ask" && S.mode !== "analyze") setMode("ask"); toast(`接下来只在《${baseName(d.scopeFile)}》里找答案`); $("q").focus(); return; }
     if (d.extractFile != null) { setScopeFile(d.extractFile); setMode("extract"); toast(`写下要从《${baseName(d.extractFile)}》提取的内容`); return; }
-    if (d.scopeReset) { S.scope = { source_ids: [], file_types: [], days: 0, path: null }; return renderScope(); }
+    if (d.tagRemove != null) {
+      const path = $("src-tags").dataset.path, r = await api("remove_tag", path, d.tagRemove);
+      if (r.error) toast(r.error); else loadSrcTags(r.tags);
+      return;
+    }
+    if (d.tagFilter != null) {
+      S.scope = { source_ids: [], file_types: [], days: 0, path: null, tags: [d.tagFilter] };
+      showView("qa"); renderScope(); toast(`接下来只在标签“${d.tagFilter}”的文件里找`); $("q").focus(); return;
+    }
+    if (d.genTags != null) { const r = await api("generate_tags", d.genTags); toast(r.ok ? "开始生成标签" : "已经在生成了"); return; }
+    if (d.scopeReset) { S.scope = { source_ids: [], file_types: [], days: 0, path: null, tags: [] }; return renderScope(); }
     if (d.scopeClose) { S.scopeOpen = false; renderScope(); $("q").focus(); return; }
     if (d.scopeClearFile) { S.scope.path = null; return renderScope(); }
     if (d.copySrc) { const s = currentSources().find((x) => x.n === Number(d.copySrc)); if (s) copy(s.text); return; }
@@ -990,19 +1034,31 @@
   $("btn-add-side").addEventListener("click", addFolder);
   $("btn-stop").addEventListener("click", () => api("stop"));
   document.querySelectorAll(".composer .seg button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
-  $("scope-btn").addEventListener("click", () => { S.scopeOpen = !S.scopeOpen; renderScope(); });
+  $("scope-btn").addEventListener("click", async () => {
+    S.scopeOpen = !S.scopeOpen; renderScope();
+    if (S.scopeOpen) { try { S.tags = await api("tags", 40); } catch (e) { /* 忽略 */ } renderScope(); }
+  });
   $("scope-pop").addEventListener("change", (e) => {
     const t = e.target, d = t.dataset, sc = S.scope;
     const toggle = (arr, v) => { const i = arr.indexOf(v); if (t.checked && i < 0) arr.push(v); if (!t.checked && i >= 0) arr.splice(i, 1); };
     if (d.scopeSrc) toggle(sc.source_ids, Number(d.scopeSrc));
     else if (d.scopeType) toggle(sc.file_types, d.scopeType);
     else if (d.scopeDays != null) sc.days = Number(d.scopeDays);
+    else if (d.scopeTag != null) toggle(sc.tags, d.scopeTag);
     renderScope();
   });
   document.addEventListener("mousedown", (e) => {
     if (S.scopeOpen && !e.target.closest(".scope-wrap")) { S.scopeOpen = false; renderScope(); }
   });
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+  $("aside").addEventListener("submit", async (e) => {
+    if (!e.target.matches("form.tag-add")) return;
+    e.preventDefault();
+    const input = e.target.querySelector("input"), path = $("src-tags").dataset.path;
+    if (!input.value.trim()) return;
+    const r = await api("add_tag", path, input.value);
+    if (r.error) toast(r.error); else { loadSrcTags(r.tags); setTimeout(() => { const i = $("tag-input"); if (i) i.focus(); }, 0); }
+  });
   $("lib").addEventListener("submit", (e) => {
     if (e.target.matches("form.fset")) { e.preventDefault(); saveFolderSettings(e.target); }
   });

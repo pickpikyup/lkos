@@ -290,6 +290,9 @@ def test_source_commands_and_update(cli, corpus):
     (corpus / "新文件.md").write_text("# 新文件\n\n年会在三楼举办。\n", encoding="utf-8")
     out = cli("update")
     assert "新索引 1" in out
+    assert "还没有标签" in cli("tags", "list")
+    assert "已为 5 个文件生成标签" in cli("tags", "auto")
+    assert "标签" in cli("tags", "list")
     out = cli("source", "set", "1")
     assert "自动更新：每周" in out and "排除规则：无" in out
     out = cli("source", "set", "1", "--refresh", "monthly", "-x", "新文件*", "--ocr")

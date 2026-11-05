@@ -23,6 +23,8 @@ app.add_typer(source_app, name="source")
 daemon_app = typer.Typer(add_completion=False, no_args_is_help=True,
                          help="后台服务：关掉窗口后继续按周期更新索引（macOS，登录后自动运行）。")
 app.add_typer(daemon_app, name="daemon")
+tags_app = typer.Typer(add_completion=False, no_args_is_help=True, help="文件标签：查看、自动生成。")
+app.add_typer(tags_app, name="tags")
 console = Console()
 err = Console(stderr=True)
 
@@ -162,6 +164,49 @@ def source_set(number: int = typer.Argument(..., min=1, help="编号（见 lkos 
     console.print(f"  排除规则：{'、'.join(s['exclude']['patterns']) or '无'}")
     console.print(f"  不索引类型：{'、'.join(s['exclude']['types']) or '无'}")
     console.print(f"  扫描件文字识别：{'开' if s['ocr'] else '关'}")
+
+
+@tags_app.command("list")
+def tags_list(limit: int = typer.Option(50, "--limit", min=1, help="最多显示多少个")):
+    """列出标签及使用它的文件数。"""
+    try:
+        a = open_app()
+    except LkosError as e:
+        fail(e)
+    rows = a.repo.all_tags(limit)
+    a.close()
+    if not rows:
+        console.print("还没有标签：lkos tags auto")
+        return
+    table = Table("标签", "文件数", "其中手动")
+    for r in rows:
+        table.add_row(r["tag"], str(r["files"]), str(r["user_files"] or 0))
+    console.print(table)
+
+
+@tags_app.command("auto")
+def tags_auto(limit: Optional[int] = typer.Option(None, "--limit", min=1, help="只处理前 N 个文件")):
+    """给还没有标签的文件自动生成标签（每份文件一次很短的模型调用）。"""
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+
+    try:
+        a = open_app()
+    except LkosError as e:
+        fail(e)
+    try:
+        with Progress(TextColumn("{task.description}"), BarColumn(), MofNCompleteColumn(), TimeElapsedColumn(),
+                      console=console, transient=True) as progress:
+            task = progress.add_task("生成标签", total=len(a.repo.files_to_tag(limit=limit)))
+            n = a.tagger.run(limit=limit, on_progress=lambda i, t, p: progress.update(
+                task, completed=i, description=f"生成标签 {Path(p).name[:40]}"))
+    except KeyboardInterrupt:
+        err.print("已中断，已生成的标签已保存。")
+        raise typer.Exit(code=130)
+    except LkosError as e:
+        fail(e)
+    finally:
+        a.close()
+    console.print(f"已为 {n} 个文件生成标签。")
 
 
 @daemon_app.command("run")
