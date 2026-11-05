@@ -24,6 +24,8 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-cov>=5"]
 ui = ["pywebview>=5"]
+# 扫描版 PDF 的文字识别（macOS 自带的 Vision 框架）
+ocr = ["pyobjc-framework-Vision>=10; sys_platform == 'darwin'", "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'"]
 
 [project.scripts]
 lkos = "lkos.cli:main"

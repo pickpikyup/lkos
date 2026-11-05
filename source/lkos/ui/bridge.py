@@ -44,7 +44,7 @@ AUTO_CHECK_SECONDS = 600       # 每 10 分钟看一次有没有到期的文件�
 
 PROBLEM_HINTS = {
     "encrypted": "文件有密码，无法读取",
-    "no extractable text": "没有文字层（可能是扫描件），以后开启 OCR 后可以检索",
+    "no extractable text": "没有文字层（可能是扫描件）：在文件夹的“设置”里打开“文字识别”后可以检索",
     "unsupported": None,   # 用错误信息本身（已写明处理办法）
 }
 

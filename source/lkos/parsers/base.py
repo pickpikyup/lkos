@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import Iterator, Protocol
 
-from lkos.errors import EncryptedFileError, ParseError
+from lkos.errors import Cancelled, EncryptedFileError, ParseError
 from lkos.types import Block
 
 
@@ -51,11 +51,11 @@ def parser_for(path: Path, allowed: list[str] | None = None) -> Parser | None:
     return None
 
 
-def parse_file(parser: Parser, path: Path) -> list[Block]:
-    """统一异常：未预期的异常包装为 ParseError，便于 Indexer 记录失败原因。"""
+def parse_file(parser: Parser, path: Path, **options) -> list[Block]:
+    """统一异常：未预期的异常包装为 ParseError，便于 Indexer 记录失败原因。options 传给解析器（如 PDF 的 ocr）。"""
     try:
-        return [b for b in parser.parse(path) if b.text.strip()]
-    except (EncryptedFileError, ParseError):  # 含 UnsupportedFileError
+        return [b for b in parser.parse(path, **options) if b.text.strip()]
+    except (EncryptedFileError, ParseError, Cancelled):  # 含 UnsupportedFileError；Cancelled 来自闲时闸门
         raise
     except Exception as e:  # noqa: BLE001 - 第三方解析库抛出的异常种类不可控
         raise ParseError(f"{type(e).__name__}: {e}") from e

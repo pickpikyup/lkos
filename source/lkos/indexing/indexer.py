@@ -83,6 +83,21 @@ class Indexer:
         self.repo = repo
         self.gateway = gateway
         self.chunker = chunker or make_chunker(cfg.indexing)
+        self._ocr_engine = None
+        self._ocr_resolved = False
+
+    @property
+    def ocr_engine(self):
+        """文字识别引擎（macOS Vision）；不可用时为 None。测试可以直接赋值替换。"""
+        if not self._ocr_resolved:
+            from lkos.parsers import ocr
+
+            self._ocr_engine, self._ocr_resolved = ocr.engine(), True
+        return self._ocr_engine
+
+    @ocr_engine.setter
+    def ocr_engine(self, fn) -> None:
+        self._ocr_engine, self._ocr_resolved = fn, True
 
     # ---------- 遍历 ----------
     def walk(self, folder: Path) -> Iterator[Path]:
@@ -150,6 +165,10 @@ class Indexer:
             else:
                 self.repo.set_meta(sig_key, signature)  # 新来源：直接按当前参数切块
         rechunk = rechunk_since is not None
+        # 文字识别：文件夹设置里打开、且本机可用时，扫描页做识别；打开之前索引过的 PDF 重新处理一次
+        settings = self.repo.source_settings(norm_path(folder)) or {}
+        ocr = self.ocr_engine if settings.get("ocr") else None
+        ocr_since = self.repo.get_meta(f"ocr:{source_id}") if ocr else None
         run = self.repo.start_run(source_id)
         seen: set[str] = set()
         failures: list[tuple[str, str]] = []
@@ -167,7 +186,7 @@ class Indexer:
                 seen.add(path)
                 if gate is not None:
                     gate.wait()
-                action, detail = self._index_one(p, path, source_id, run, gate, rechunk_since)
+                action, detail = self._index_one(p, path, source_id, run, gate, rechunk_since, ocr, ocr_since)
                 if action == "failed":
                     failures.append((path, detail or ""))
                 emit(path, action, detail)
@@ -195,13 +214,16 @@ class Indexer:
         )
 
     def _index_one(self, p: Path, path: str, source_id: int, run: IndexRun, gate=None,
-                   rechunk_since: str | None = None) -> tuple[str, str | None]:
+                   rechunk_since: str | None = None, ocr=None, ocr_since: str | None = None) -> tuple[str, str | None]:
         parser = parser_for(p, self.cfg.indexing.extensions)
         st = p.stat()
         record = self.repo.get_file(path)
         done = record is not None and record.status in ("indexed", "skipped")
         if done and rechunk_since and (record.indexed_at or "") < rechunk_since:
             done = False  # 用旧切块参数索引的文件：重新切块
+        use_ocr = ocr if parser.file_type == "pdf" else None
+        if done and use_ocr and ocr_since and (record.indexed_at or "") < ocr_since:
+            done = False  # 打开文字识别之前索引的 PDF：扫描页还没识别
         # 大小与修改时间都没变时不必重新计算哈希（全量 2–4 GB 时能省下大量读盘）
         if done and record.size_bytes == st.st_size and record.mtime == st.st_mtime:
             run.files_skipped += 1
@@ -210,7 +232,8 @@ class Indexer:
         content_hash = sha256_of(p)
         info = FileInfo(path=path, file_type=parser.file_type, content_hash=content_hash,
                         size_bytes=st.st_size, mtime=st.st_mtime)
-        if done and record.content_hash == content_hash:  # 只是 touch 过，内容未变
+        if done and record.content_hash == content_hash and not (use_ocr and ocr_since
+                                                                and (record.indexed_at or "") < ocr_since):  # 只是 touch 过
             self.repo.touch_file(record.id, st.st_mtime)
             run.files_skipped += 1
             return "unchanged", None
@@ -224,7 +247,8 @@ class Indexer:
 
         t_parse = time.perf_counter()
         try:
-            blocks = parse_file(parser, p)
+            options = {"ocr": use_ocr, "before_ocr": gate.wait if gate is not None else None} if use_ocr else {}
+            blocks = parse_file(parser, p, **options)
         except EncryptedFileError as e:
             self.repo.mark_skipped(source_id, info, f"encrypted: {e}")
             run.files_skipped += 1
@@ -243,7 +267,8 @@ class Indexer:
         if not chunks:
             self.repo.mark_skipped(source_id, info, "no extractable text")
             run.files_skipped += 1
-            return "skipped", "没有可抽取的文本（可能是扫描件，POC 不做 OCR）"
+            return "skipped", ("文字识别也没有识别出文字" if use_ocr else
+                               "没有文字层（可能是扫描件），在文件夹设置里打开“文字识别”后可以检索")
 
         # Embedding 缓存：相同文本（重复的页眉页脚、模板页、修改文件中没改的段落）只算一次向量
         hashes = [text_hash(c.text) for c in chunks]

@@ -118,6 +118,10 @@ class Repository:
         if ocr is not None:
             sets.append("ocr = ?")
             args.append(1 if ocr else 0)
+            row = self.conn.execute("SELECT ocr FROM sources WHERE id = ?", (int(source_id),)).fetchone()
+            if ocr and row is not None and not row["ocr"]:
+                # 记下打开的时间：在这之前索引的 PDF 下次更新时重新处理（扫描页做文字识别）
+                self.set_meta(f"ocr:{int(source_id)}", now_iso(precise=True))
         if sets:
             self.conn.execute(f"UPDATE sources SET {', '.join(sets)} WHERE id = ?", (*args, int(source_id)))
 
@@ -127,8 +131,8 @@ class Repository:
         self.remove_files(ids)
         with self.transaction():
             self.conn.execute("DELETE FROM index_runs WHERE source_id = ?", (source_id,))
-            self.conn.execute("DELETE FROM index_meta WHERE key IN (?, ?)",
-                              (f"chunker:{source_id}", f"rechunk:{source_id}"))
+            self.conn.execute("DELETE FROM index_meta WHERE key IN (?, ?, ?)",
+                              (f"chunker:{source_id}", f"rechunk:{source_id}", f"ocr:{source_id}"))
             self.conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
         self.prune_vectors()
         return len(ids)
