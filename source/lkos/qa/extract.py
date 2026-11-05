@@ -120,12 +120,13 @@ class Extractor:
 
     def extract(self, request: str, path: str | None = None, k: int = 12,
                 on_progress: Callable[[int, int], None] | None = None, on_context=None,
-                cancelled: Callable[[], bool] | None = None, model_override: str | None = None) -> ExtractResult:
+                cancelled: Callable[[], bool] | None = None, model_override: str | None = None,
+                scope=None) -> ExtractResult:
         with (self.marker.active() if self.marker else nullcontext()):
             return self._run(request.strip(), path, k, on_progress or (lambda *a: None), on_context,
-                             cancelled or (lambda: False), model_override)
+                             cancelled or (lambda: False), model_override, scope)
 
-    def _run(self, request, path, k, progress, on_context, cancelled, model_override) -> ExtractResult:
+    def _run(self, request, path, k, progress, on_context, cancelled, model_override, scope=None) -> ExtractResult:
         if not request:
             raise LkosError("请写清楚要提取什么，例如“列出各项目的名称、预算和负责人”")
         P = PROMPTS["zh" if answer_lang(request) == "zh" else "en"]
@@ -139,7 +140,8 @@ class Extractor:
             if not chunks:
                 raise LkosError("这个文件还没有索引，或者没有可读的文字")
         else:
-            chunks = self.retriever.search(request, k=k)
+            extra = {"scope": scope} if scope is not None and not scope.empty else {}
+            chunks = self.retriever.search(request, k=k, **extra)
             if not chunks:
                 return ExtractResult(columns=columns)
         for i, c in enumerate(chunks, start=1):

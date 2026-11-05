@@ -7,6 +7,7 @@
     view: "qa", mode: "ask", models: [], model: "", history: [], sources: [], index: { state: "idle" },
     paused: false, cur: null, sel: null, lib: null, confirmRemove: null, problemsCount: 0,
     settings: { dev_mode: false },
+    scope: { source_ids: [], file_types: [], days: 0, path: null }, scopeOpen: false, followUp: null,
     log: { tab: "run", after: 0, lines: [], level: "DEBUG", filter: "", file: "", warn: 0, calls: [] },
   };
   const $ = (id) => document.getElementById(id);
@@ -56,7 +57,7 @@
         if (el) el.innerHTML = answerHTML(c.text, true);
         keepBottom();
       } else if (e.type === "done") {
-        S.cur = { phase: "done", record: e.record, question: e.record.question };
+        S.cur = { phase: "done", record: e.record, question: e.record.question, kind: e.record.kind };
         const cited = e.record.cited || [];
         S.sel = cited.length ? cited[0] : (e.record.context.length ? 1 : null);
         loadHistory();
@@ -88,7 +89,7 @@
       S.bootError = String(err && err.message || err);
     }
     applyDevMode();
-    renderSide(); renderStatus(); renderQA(); renderAside();
+    renderSide(); renderStatus(); renderQA(); renderAside(); renderScope();
     $("q").focus();
   }
   window.addEventListener("pywebviewready", boot);
@@ -164,6 +165,66 @@
     $("status-d").textContent = d;
   }
 
+  // ---------------- 范围（文件夹 / 类型 / 时间 / 单个文件） ----------------
+  const TYPES = [["pdf", "PDF", ["pdf"]], ["docx", "Word", ["docx", "doc"]], ["pptx", "PowerPoint", ["pptx", "ppt"]], ["md", "Markdown", ["md"]]];
+  const DAYS = [[0, "不限"], [7, "近 7 天"], [30, "近 30 天"], [365, "近一年"]];
+  const baseName = (p) => String(p || "").split("/").filter(Boolean).pop() || p;
+
+  function scopeDict() {
+    const sc = S.scope, d = {};
+    if (sc.path) return { path: sc.path };
+    if (sc.source_ids.length) d.source_ids = sc.source_ids.slice();
+    if (sc.file_types.length) d.file_types = TYPES.filter((t) => sc.file_types.includes(t[0])).flatMap((t) => t[2]);
+    if (sc.days) d.since = Date.now() / 1000 - sc.days * 86400;
+    return Object.keys(d).length ? d : null;
+  }
+
+  function scopeText(sc) {
+    if (!sc) return "全部资料";
+    if (sc.path) return `《${baseName(sc.path)}》`;
+    const parts = [];
+    if (sc.source_ids && sc.source_ids.length) {
+      const names = S.sources.filter((s) => sc.source_ids.includes(s.id)).map((s) => baseName(s.path));
+      parts.push(names.length > 2 ? `${names.length} 个文件夹` : names.join("、") || "所选文件夹");
+    }
+    if (sc.file_types && sc.file_types.length) {
+      parts.push(TYPES.filter((t) => t[2].some((x) => sc.file_types.includes(x))).map((t) => t[1]).join("/"));
+    }
+    if (sc.since) {
+      const days = Math.round((Date.now() / 1000 - sc.since) / 86400);
+      const hit = DAYS.find((x) => x[0] && Math.abs(x[0] - days) <= 1);
+      parts.push(hit ? hit[1] : `近 ${days} 天`);
+    }
+    return parts.join(" · ") || "全部资料";
+  }
+
+  function renderScope() {
+    const sc = S.scope, d = scopeDict();
+    $("scope-label").textContent = "范围：" + scopeText(d);
+    $("scope-btn").classList.toggle("on", !!d);
+    $("scope-btn").setAttribute("aria-expanded", String(S.scopeOpen));
+    const pop = $("scope-pop");
+    pop.hidden = !S.scopeOpen;
+    if (!S.scopeOpen) return;
+    let h = "";
+    if (sc.path) {
+      h += `<div><h3>只用这一份文件</h3></div><div class="file"><span title="${esc(sc.path)}">${esc(baseName(sc.path))}</span>
+        <button type="button" data-scope-clear-file="1" aria-label="取消，改回按文件夹和类型">×</button></div>`;
+    } else {
+      h += `<div><h3>文件夹</h3><div class="opts">${S.sources.length ? S.sources.map((s) => `<label><input type="checkbox" data-scope-src="${s.id}"${sc.source_ids.includes(s.id) ? " checked" : ""}><span class="p" title="${esc(s.path)}">${esc(baseName(s.path))}</span></label>`).join("") : '<span class="hint">还没有添加文件夹</span>'}</div></div>
+        <div><h3>文件类型</h3><div class="opts inline">${TYPES.map((t) => `<label><input type="checkbox" data-scope-type="${t[0]}"${sc.file_types.includes(t[0]) ? " checked" : ""}>${t[1]}</label>`).join("")}</div></div>
+        <div><h3>修改时间</h3><div class="opts inline">${DAYS.map((x) => `<label><input type="radio" name="scope-days" data-scope-days="${x[0]}"${sc.days === x[0] ? " checked" : ""}>${x[1]}</label>`).join("")}</div></div>
+        <div class="hint">不勾选表示不限。想只问一份文件：在右侧出处里点“只问这份文件”。</div>`;
+    }
+    h += `<div class="foot"><button type="button" class="btn small" data-scope-reset="1">恢复全部资料</button><button type="button" class="btn small primary" data-scope-close="1">完成</button></div>`;
+    pop.innerHTML = h;
+  }
+
+  function setScopeFile(path) {
+    S.scope = { source_ids: [], file_types: [], days: 0, path };
+    renderScope();
+  }
+
   // ---------------- 问答区 ----------------
   function modelBanner() {
     const bad = S.models.filter((m) => !m.ok);
@@ -174,6 +235,7 @@
 
   function answerHTML(text, streaming) {
     let h = esc(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    h = h.replace(/^#{2,4}\s*(.+)(?:\n|$)/gm, '<span class="ah">$1</span>');
     h = h.replace(/\[(\d+(?:\s*[,，、]\s*\d+)*)\]/g, (_, nums) =>
       nums.split(/\s*[,，、]\s*/).map((n) => `<button type="button" class="ref${Number(n) === S.sel ? " on" : ""}" data-ref="${n}" aria-label="出处 ${n}">${n}</button>`).join(""));
     return h + (streaming ? '<span class="caret" aria-hidden="true"></span>' : "");
@@ -185,9 +247,41 @@
     return `<div class="found"><span>找到 ${files.length} 份资料</span>${files.slice(0, 3).map((f) => `<span class="pill" title="${esc(f)}">${esc(f)}</span>`).join("")}</div>`;
   }
 
-  function questionBlock(q, search) {
-    const label = search ? "你搜索" : (/^总结：《/.test(q) ? "全文总结" : "你问");
-    return `<div><div class="q-label">${label}</div><h1 class="q-title">${esc(q)}</h1></div>`;
+  const KIND_LABEL = { qa: "你问", search: "你搜索", summary: "全文总结", analysis: "深度分析", extract: "信息提取" };
+  function questionBlock(c) {
+    const r = c.record, kind = c.phase === "search" ? "search" : (c.kind || (r && r.kind) || (/^总结：《/.test(c.question) ? "summary" : "qa"));
+    const ex = (r && r.extra) || {};
+    let label = KIND_LABEL[kind] || "你问";
+    if (kind === "qa" && (ex.follow_up || c.followUp)) label = "你追问";
+    const title = String(c.question).replace(/^(分析|提取)：/, "");
+    const sc = r ? (ex.path && kind === "extract" ? { path: ex.path } : (ex.scope && Object.keys(ex.scope).length ? ex.scope : null)) : c.scope;
+    const scopeNote = sc && kind !== "summary" ? `<span class="q-scope"> · 范围：${esc(scopeText(sc))}</span>` : "";
+    return `<div><div class="q-label">${label}${scopeNote}</div><h1 class="q-title">${esc(title)}</h1></div>`;
+  }
+
+  function step(cls, label, sub) {
+    return `<li class="${cls}"><span class="ic" aria-hidden="true">${cls === "done" ? checkSvg() : ""}</span>
+      <span class="label">${label}</span>${sub ? `<span class="sub">${sub}</span>` : ""}</li>`;
+  }
+  const SKELETON = '<div class="skeleton" aria-hidden="true"><div style="width:92%"></div><div style="width:78%"></div><div style="width:54%"></div></div>';
+
+  function analysisSteps(c) {
+    const p = c.progress || { stage: "plan", done: 0, total: 1 };
+    const order = ["plan", "search", "write"], at = order.indexOf(p.stage);
+    const st = (i) => (i < at ? "done" : i === at ? "now" : "");
+    return `<ol class="steps" aria-label="进度">
+      ${step(st(0), "把问题拆成几个要分别查的方面", at === 0 ? "通常 5–15 秒" : "")}
+      ${step(st(1), `分方面查找资料${p.stage === "search" ? `（${p.done} / ${p.total}）` : ""}`, at > 1 && c.sources.length ? `找到 ${new Set(c.sources.map((s) => s.file)).size} 份资料，右侧可以先看` : "")}
+      ${step(st(2), "按方面写分析、综合结论并标注出处", at === 2 ? "需要读的资料较多，通常 20–40 秒后开始出字" : "")}</ol>${SKELETON}`;
+  }
+
+  function extractSteps(c) {
+    const p = c.progress || {}, have = c.sources.length > 0, batching = p.stage === "extract";
+    const finished = batching && p.done === p.total;
+    return `<ol class="steps" aria-label="进度">
+      ${step(have ? "done" : "now", have ? `已读取 ${c.sources.length} 个片段（${new Set(c.sources.map((s) => s.file)).size} 份资料）` : (c.scope && c.scope.path ? "正在读取这份文件" : "正在查找相关资料"), have ? "右侧可以先看原文" : "")}
+      ${step(finished ? "done" : (have ? "now" : ""), `逐批提取${batching ? `（${p.done} / ${p.total} 批）` : ""}`, have && !finished ? "每批大约 15–40 秒，可以随时停止" : "")}
+      ${step(finished ? "now" : "", "整理成表格，每行标出处", "")}</ol>${SKELETON}`;
   }
 
   function renderQA() {
@@ -206,7 +300,7 @@
       col.innerHTML = h;
       return;
     }
-    h += questionBlock(c.question, c.phase === "search");
+    h += questionBlock(c);
     if (c.phase === "search" && c.autoKeyword) {
       h += `<div class="notice"><div><div class="h">这看起来是关键词，已直接搜索原文</div>
         <div class="d">想让模型回答，请输入完整的问题，例如“${esc(c.question)} 在运营商业务里有哪些应用？”</div>
@@ -215,12 +309,14 @@
     if (c.phase === "search") {
       h += `<div class="found"><span>${c.results.length ? `找到 ${c.results.length} 个相关片段 · ${sec(c.ms)}` : "没有找到相关内容"}</span></div>`;
       h += `<div class="card-list">${c.results.map((r) => hitCard(r)).join("")}</div>`;
+    } else if (c.kind === "analysis" && (c.phase === "retrieving" || c.phase === "reading")) {
+      h += analysisSteps(c);
+    } else if (c.kind === "extract" && (c.phase === "retrieving" || c.phase === "reading")) {
+      h += extractSteps(c);
     } else if (c.kind === "summary" && (c.phase === "retrieving" || c.phase === "reading")) {
       const p = c.progress || {};
       const parts = c.sources.length;
       const mapping = p.stage === "map", final = p.stage === "final";
-      const step = (cls, label, sub) => `<li class="${cls}"><span class="ic" aria-hidden="true">${cls === "done" ? checkSvg() : ""}</span>
-        <span class="label">${label}</span>${sub ? `<span class="sub">${sub}</span>` : ""}</li>`;
       h += `<ol class="steps" aria-label="进度">
         ${step(parts ? "done" : "now", parts ? `已读取全文，分成 ${parts} 个部分` : "正在读取全文", parts ? "右侧可以先看各部分原文" : "")}
         ${p.total > 1 || mapping ? step(final ? "done" : (mapping ? "now" : ""), `逐部分提炼要点${mapping ? `（${p.done} / ${p.total}）` : ""}`,
@@ -246,7 +342,8 @@
     } else if (c.phase === "error") {
       h += `<div class="banner" role="alert">${esc(c.error)}</div>`;
     } else if (c.phase === "done") {
-      h += c.record.not_found ? notFoundHTML(c.record) : doneHTML(c.record);
+      const r = c.record;
+      h += r.kind === "extract" ? extractHTML(r) : (r.not_found ? notFoundHTML(r) : doneHTML(r));
     }
     col.innerHTML = h;
   }
@@ -256,9 +353,12 @@
   }
 
   function doneHTML(r) {
-    const isSummary = /^总结：《/.test(r.question);
+    const isSummary = r.kind === "summary" || /^总结：《/.test(r.question);
     let h = !r.context.length ? "" : isSummary
       ? `<div class="found"><span>按 ${r.context.length} 个部分汇总 · 点编号查看对应原文</span></div>` : foundPills(r.context);
+    if (r.kind === "analysis" && (r.extra.aspects || []).length) {
+      h += `<div class="aspects"><span>分 ${r.extra.aspects.length} 个方面分析：</span>${r.extra.aspects.map((a) => `<span class="pill">${esc(a)}</span>`).join("")}</div>`;
+    }
     h += `<div class="answer">${answerHTML(r.answer, false)}</div>`;
     const parts = [];
     if (r.ttft_ms != null) parts.push("首字 " + sec(r.ttft_ms));
@@ -266,8 +366,34 @@
     if (r.model) parts.push(esc(r.model.replace(/^local\//, "")) + "（本机）");
     if (!r.cited.length) parts.push("回答没有标注出处，请在右侧核对原文");
     h += `<div class="meta"><span>${parts.join(" · ")}</span><span class="grow"></span>
+      ${isSummary ? "" : '<button type="button" class="btn small" data-action="follow">追问</button>'}
       <button type="button" class="btn small" data-action="copy">复制回答</button>
-      <button type="button" class="btn small" data-action="again">重新回答</button></div>`;
+      <button type="button" class="btn small" data-action="again">${isSummary ? "重新总结" : r.kind === "analysis" ? "重新分析" : "重新回答"}</button></div>`;
+    return h;
+  }
+
+  function extractHTML(r) {
+    const cols = r.extra.columns || [], rows = r.extra.rows || [];
+    if (!rows.length) {
+      return `<div class="notice"><div><div class="h">没有提取到符合要求的信息</div>
+        <div class="d">${r.context.length ? `已读了 ${r.context.length} 个片段，没有找到能填进表格的内容。可以换个说法，或写明字段，例如“字段：项目、金额、负责人”。` : "没有找到相关资料。"}</div></div></div>
+        <div class="chips"><button type="button" class="btn" data-action="again">重新提取</button><button type="button" class="btn" data-action="search-instead">改用搜索模式找关键词</button></div>`;
+    }
+    let h = r.context.length ? foundPills(r.context) : "";
+    h += `<div class="xtab-wrap"><table class="xtab"><thead><tr>${cols.map((c) => `<th scope="col">${esc(c)}</th>`).join("")}<th scope="col">出处</th></tr></thead><tbody>`;
+    for (const row of rows) {
+      h += `<tr>${cols.map((c) => { const v = row.values[c] || ""; return `<td${v ? "" : ' class="empty"'}>${v ? esc(v) : "—"}</td>`; }).join("")}
+        <td class="refs">${row.refs.map((n) => `<button type="button" class="ref${n === S.sel ? " on" : ""}" data-ref="${n}" aria-label="出处 ${n}">${n}</button>`).join("") || "—"}</td></tr>`;
+    }
+    h += "</tbody></table></div>";
+    const parts = [`${rows.length} 行 · ${cols.length} 列`];
+    if (r.latency_ms != null) parts.push("共 " + sec(r.latency_ms));
+    if (r.model) parts.push(esc(r.model.replace(/^local\//, "")) + "（本机）");
+    if (rows.some((x) => !x.refs.length)) parts.push("有的行没有标出处，请核对原文");
+    h += `<div class="meta"><span>${parts.join(" · ")}</span><span class="grow"></span>
+      <button type="button" class="btn small primary" data-action="export-csv">导出 CSV</button>
+      <button type="button" class="btn small" data-action="copy-table">复制表格</button>
+      <button type="button" class="btn small" data-action="again">重新提取</button></div>`;
     return h;
   }
 
@@ -345,6 +471,8 @@
             <button type="button" class="btn primary" data-open="${esc(s.path)}">${s.type === "pdf" && s.page ? `打开（第 ${s.page} 页）` : "打开原文件"}</button>
             <button type="button" class="btn" data-reveal="${esc(s.path)}">在访达中显示</button>
             <button type="button" class="btn" data-summarize="${esc(s.path)}">总结这份文件</button>
+            <button type="button" class="btn" data-scope-file="${esc(s.path)}">只问这份文件</button>
+            <button type="button" class="btn" data-extract-file="${esc(s.path)}">从这份文件提取</button>
             <button type="button" class="btn" data-copy-src="${s.n}">复制原文</button>
           </div></div>`;
       } else {
@@ -384,33 +512,28 @@
   }
 
   let ticker = null;
-  async function submit(text, forceAsk) {
-    const q = (text != null ? text : $("q").value).trim();
-    if (!q) return;
+  const GEN_TEXT = {
+    qa: "回答生成中，可以先在右侧核对原文", summary: "正在总结整份文件，可以随时停止",
+    analysis: "深度分析中（大约 1–2 分钟），可以随时停止", extract: "正在提取，可以随时停止",
+  };
+
+  // 开始一个后台任务（问答 / 总结 / 分析 / 提取）：先显示进度，等 Python 推送事件
+  async function startJob(kind, question, call, extra) {
+    if (!$("generating").hidden) { toast("上一个任务还在进行，请稍等或先停止"); return; }
     if (S.view !== "qa") showView("qa");
-    $("q").value = "";
-    const autoKeyword = S.mode === "ask" && !forceAsk && isKeywordQuery(q);
-    if (S.mode === "search" || autoKeyword) {
-      S.cur = { phase: "search", question: q, results: [], ms: 0, autoKeyword };
-      try {
-        const r = await api("search", q);
-        S.cur.results = r.results; S.cur.ms = r.ms;
-        S.sel = r.results.length ? 1 : null;
-      } catch (e) { S.cur = { phase: "error", question: q, error: String(e.message || e) }; }
-      renderQA(); renderAside(); renderSide();
-      return;
-    }
-    S.cur = { phase: "retrieving", question: q, text: "", sources: [] };
+    S.cur = Object.assign({ phase: "retrieving", kind, question, text: "", sources: [] }, extra || {});
     S.sel = null;
+    $("gen-text").textContent = GEN_TEXT[kind] || GEN_TEXT.qa;
     renderQA(); renderAside(); renderSide();
     setGenerating(true);
     try {
-      const r = await api("ask", q);
+      const r = await call();
       if (r.error) { S.cur.phase = "error"; S.cur.error = r.error; setGenerating(false); renderQA(); return; }
       S.cur.qid = r.qid;
     } catch (e) {
       S.cur.phase = "error"; S.cur.error = String(e.message || e); setGenerating(false); renderQA();
     }
+    if (kind !== "qa") return;
     clearInterval(ticker);
     ticker = setInterval(() => {
       const w = $("waited");
@@ -419,27 +542,72 @@
     }, 1000);
   }
 
-  async function summarizeFile(path) {
-    if (!$("generating").hidden) { toast("正在回答，请稍等或先停止"); return; }
-    if (S.view !== "qa") showView("qa");
-    const name = path.split("/").pop();
-    S.cur = { phase: "retrieving", kind: "summary", question: `总结：《${name}》`, text: "", sources: [] };
-    S.sel = null;
-    renderQA(); renderAside(); renderSide();
-    setGenerating(true);
-    try {
-      const r = await api("summarize", path);
-      if (r.error) { S.cur.phase = "error"; S.cur.error = r.error; setGenerating(false); renderQA(); return; }
-      S.cur.qid = r.qid;
-    } catch (e) {
-      S.cur.phase = "error"; S.cur.error = String(e.message || e); setGenerating(false); renderQA();
-    }
+  function askJob(q, scope, followUp) {
+    return startJob("qa", q, () => api("ask", q, scope, followUp || null), { scope, followUp });
+  }
+  function analyzeJob(q, scope) {
+    return startJob("analysis", "分析：" + q, () => api("analyze", q, scope), { scope });
+  }
+  function extractJob(q, path, scope) {
+    const label = "提取：" + q + (path ? `（《${baseName(path)}》）` : "");
+    return startJob("extract", label, () => api("extract", q, path || null, path ? null : scope), { scope: path ? { path } : scope });
   }
 
+  async function submit(text, forceAsk) {
+    const q = (text != null ? text : $("q").value).trim();
+    if (!q) return;
+    if (!$("generating").hidden) { toast("上一个任务还在进行，请稍等或先停止"); return; }
+    if (S.view !== "qa") showView("qa");
+    $("q").value = "";
+    S.scopeOpen = false;
+    const scope = scopeDict(), follow = S.followUp;
+    const autoKeyword = S.mode === "ask" && !forceAsk && !follow && isKeywordQuery(q);
+    if (S.mode === "search" || autoKeyword) {
+      S.cur = { phase: "search", question: q, results: [], ms: 0, autoKeyword, scope };
+      try {
+        const r = await api("search", q, scope);
+        S.cur.results = r.results; S.cur.ms = r.ms;
+        S.sel = r.results.length ? 1 : null;
+      } catch (e) { S.cur = { phase: "error", question: q, error: String(e.message || e) }; }
+      renderScope(); renderQA(); renderAside(); renderSide();
+      return;
+    }
+    S.followUp = null; renderFollow(); renderScope();
+    if (S.mode === "extract") return extractJob(q, S.scope.path, scope);
+    if (S.mode === "analyze") return analyzeJob(q, scope);
+    return askJob(q, scope, follow && follow.id);
+  }
+
+  function summarizeFile(path) {
+    return startJob("summary", `总结：《${baseName(path)}》`, () => api("summarize", path));
+  }
+
+  function renderFollow() {
+    const f = $("follow"), u = S.followUp;
+    f.hidden = !u;
+    f.innerHTML = u ? `<span>追问：${esc(u.question)}</span><button type="button" data-action="follow-cancel" aria-label="取消追问">×</button>` : "";
+  }
+
+  // 重新执行一条记录（按它的类型和当时的范围）
+  function rerun(r) {
+    const ex = r.extra || {}, sc = ex.scope && Object.keys(ex.scope).length ? ex.scope : null;
+    if (r.kind === "summary" || /^总结：《/.test(r.question)) return summarizeFile(ex.path || (r.context[0] && r.context[0].path));
+    if (r.kind === "extract") return extractJob(ex.request || r.question.replace(/^提取：/, ""), ex.path, sc);
+    if (r.kind === "analysis") return analyzeJob(ex.query || r.question.replace(/^分析：/, ""), sc);
+    return askJob(r.question, sc, ex.follow_up);
+  }
+
+  const PLACEHOLDER = {
+    ask: "问一个关于你资料的问题，⌘↩ 发送",
+    search: "输入关键词，只搜索原文（不生成回答，很快）",
+    extract: "要整理成表格的信息，例如“列出各项目的名称、预算和负责人”，或写明“字段：客户、金额、日期”",
+    analyze: "要深入分析的问题，例如“二期项目有哪些主要风险、怎么应对？”（大约 1–2 分钟）",
+  };
   function setMode(mode) {
     S.mode = mode;
-    document.querySelectorAll(".seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
-    $("q").placeholder = mode === "search" ? "输入关键词，只搜索原文（不生成回答，很快）" : "问一个关于你资料的问题，⌘↩ 发送";
+    document.querySelectorAll(".composer .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+    $("q").placeholder = PLACEHOLDER[mode] || PLACEHOLDER.ask;
+    if (mode !== "ask" && S.followUp) { S.followUp = null; renderFollow(); }
     $("q").focus();
   }
 
@@ -455,7 +623,7 @@
     if (!$("generating").hidden) { toast("正在回答，请稍等或先停止"); return; }
     const r = await api("open_history", Number(id));
     if (!r) { toast("这条记录已不存在"); loadHistory(); return; }
-    S.cur = { phase: "done", record: r, question: r.question };
+    S.cur = { phase: "done", record: r, question: r.question, kind: r.kind };
     S.sel = r.cited.length ? r.cited[0] : (r.context.length ? 1 : null);
     showView("qa");
     renderQA(); renderAside(); renderSide();
@@ -695,20 +863,36 @@
     if (d.open != null) { const r = await api("open_file", d.open); if (r.error) toast(r.error); return; }
     if (d.reveal != null) { const r = await api("reveal", d.reveal); if (r.error) toast(r.error); return; }
     if (d.summarize != null) return summarizeFile(d.summarize);
+    if (d.scopeFile != null) { setScopeFile(d.scopeFile); if (S.mode !== "ask" && S.mode !== "analyze") setMode("ask"); toast(`接下来只在《${baseName(d.scopeFile)}》里找答案`); $("q").focus(); return; }
+    if (d.extractFile != null) { setScopeFile(d.extractFile); setMode("extract"); toast(`写下要从《${baseName(d.extractFile)}》提取的内容`); return; }
+    if (d.scopeReset) { S.scope = { source_ids: [], file_types: [], days: 0, path: null }; return renderScope(); }
+    if (d.scopeClose) { S.scopeOpen = false; renderScope(); $("q").focus(); return; }
+    if (d.scopeClearFile) { S.scope.path = null; return renderScope(); }
     if (d.copySrc) { const s = currentSources().find((x) => x.n === Number(d.copySrc)); if (s) copy(s.text); return; }
     if (d.update) { await api("update_source", d.update); toast("已加入更新队列"); return; }
     if (d.remove) { S.confirmRemove = Number(d.remove); return renderLib(); }
     if (d.removeYes) {
       S.confirmRemove = null; toast("正在移除…");
       const r = await api("remove_source", Number(d.removeYes));
+      S.scope.source_ids = S.scope.source_ids.filter((x) => x !== Number(d.removeYes)); renderScope();
       toast(r.error || `已移除 ${fmt(r.removed_files)} 个文件的索引`); return refreshLibrary();
     }
     switch (d.action) {
       case "add": return addFolder();
       case "lib": return showView("lib");
       case "copy": return copy(S.cur.record.answer.replace(/\s*\[\d+(?:\s*[,，、]\s*\d+)*\]/g, ""));
+      case "copy-table": return copy(S.cur.record.answer);
+      case "export-csv": {
+        const r = await api("export_csv", S.cur.record.id);
+        if (r.error) toast(r.error); else if (!r.cancelled) toast("已导出：" + baseName(r.path));
+        return;
+      }
+      case "follow":
+        S.followUp = { id: S.cur.record.id, question: S.cur.record.question.replace(/^(分析|提取)：/, "") };
+        setMode("ask"); renderFollow(); return;
+      case "follow-cancel": S.followUp = null; renderFollow(); $("q").focus(); return;
       case "again":
-        if (S.cur.record && /^总结：《/.test(S.cur.question) && S.cur.record.context.length) return summarizeFile(S.cur.record.context[0].path);
+        if (S.cur.record) return rerun(S.cur.record);
         return submit(S.cur.question, true);
       case "ask-anyway": return submit(S.cur.question, true);
       case "search-instead": setMode("search"); $("q").value = S.cur ? S.cur.question : ""; return;
@@ -737,7 +921,19 @@
   $("btn-new").addEventListener("click", newQuestion);
   $("btn-add-side").addEventListener("click", addFolder);
   $("btn-stop").addEventListener("click", () => api("stop"));
-  document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  document.querySelectorAll(".composer .seg button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+  $("scope-btn").addEventListener("click", () => { S.scopeOpen = !S.scopeOpen; renderScope(); });
+  $("scope-pop").addEventListener("change", (e) => {
+    const t = e.target, d = t.dataset, sc = S.scope;
+    const toggle = (arr, v) => { const i = arr.indexOf(v); if (t.checked && i < 0) arr.push(v); if (!t.checked && i >= 0) arr.splice(i, 1); };
+    if (d.scopeSrc) toggle(sc.source_ids, Number(d.scopeSrc));
+    else if (d.scopeType) toggle(sc.file_types, d.scopeType);
+    else if (d.scopeDays != null) sc.days = Number(d.scopeDays);
+    renderScope();
+  });
+  document.addEventListener("mousedown", (e) => {
+    if (S.scopeOpen && !e.target.closest(".scope-wrap")) { S.scopeOpen = false; renderScope(); }
+  });
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
   // 输入：回车换行，⌘+回车（Windows/Linux 上 Ctrl+回车）发送。
   // 输入法保护：中文输入法里用回车选英文、Esc 取消候选时，键盘事件会带 isComposing 或 keyCode 229；
@@ -751,6 +947,7 @@
     // 普通回车：保持默认行为（换行）
   });
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && S.scopeOpen && !imeActive(e)) { S.scopeOpen = false; renderScope(); $("scope-btn").focus(); return; }
     if (e.key === "Escape" && !$("generating").hidden) {
       if (imeActive(e)) return;   // 输入法里按 Esc 取消候选词，不是要停止生成
       api("stop"); return;

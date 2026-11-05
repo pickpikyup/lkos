@@ -46,14 +46,23 @@
     </div>
     <div class="composer-wrap" id="composer-wrap">
       <form class="composer" id="composer">
+        <div class="follow" id="follow" hidden></div>
         <label for="q" class="sr-only">问题</label>
         <textarea id="q" rows="2" placeholder="问一个关于你资料的问题，⌘↩ 发送"></textarea>
         <div class="row">
           <div class="seg" role="group" aria-label="模式">
             <button type="button" data-mode="ask" aria-pressed="true">问答</button>
             <button type="button" data-mode="search" aria-pressed="false">搜索</button>
+            <button type="button" data-mode="extract" aria-pressed="false">提取</button>
+            <button type="button" data-mode="analyze" aria-pressed="false">深度分析</button>
           </div>
-          <span class="hint">范围：全部资料</span>
+          <div class="scope-wrap">
+            <button type="button" class="scope-btn" id="scope-btn" aria-expanded="false" aria-controls="scope-pop">
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></svg>
+              <span id="scope-label">全部资料</span>
+            </button>
+            <div class="scope-pop" id="scope-pop" role="dialog" aria-label="限定范围" hidden></div>
+          </div>
           <span class="grow"></span>
           <span class="hint" id="send-hint">⌘↩ 发送 · ↩ 换行</span>
           <button type="submit" class="send" aria-label="发送">
@@ -62,7 +71,7 @@
         </div>
       </form>
       <div class="generating" id="generating" hidden>
-        <span>回答生成中，可以先在右侧核对原文</span>
+        <span id="gen-text">回答生成中，可以先在右侧核对原文</span>
         <button type="button" class="btn" id="btn-stop">
           <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor"/></svg>
           停止 <span class="hint">Esc</span>

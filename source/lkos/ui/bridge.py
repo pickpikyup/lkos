@@ -420,7 +420,8 @@ class Bridge:
             log.info("信息提取：%s%s", request, f"（文件 {path}）" if path else "")
             ctx_cb = cb["on_context"]
             res = self._app.extractor.extract(request, path=path or None, on_progress=lambda d, t: cb["on_progress"]("extract", d, t),
-                                              on_context=ctx_cb, cancelled=cb["cancelled"])
+                                              on_context=ctx_cb, cancelled=cb["cancelled"],
+                                              scope=None if path else Scope.from_dict(scope))
             res.latency_ms = int((time.perf_counter() - t0) * 1000)
             log.info("提取完成：%d 列 %d 行，%d 批，共 %.0f 秒", len(res.columns), len(res.rows), res.batches,
                      res.latency_ms / 1000)
@@ -429,7 +430,8 @@ class Bridge:
             cited = sorted({n for r in res.rows for n in r["refs"]})
             label = f"提取：{request}" + (f"（《{Path(path).name}》）" if path else "")
             return self._save(label, ans, kind="extract", cited=cited,
-                              extra={"columns": res.columns, "rows": res.rows, "path": path, "request": request})
+                              extra={"columns": res.columns, "rows": res.rows, "path": path, "request": request,
+                                     "scope": scope or {}})
         return self._start("e", work)
 
     def export_csv(self, history_id: int, path: str | None = None) -> dict:
@@ -486,12 +488,14 @@ class Bridge:
         self._cancel.set()
         return {"ok": True}
 
-    def search(self, query: str) -> dict:
+    def search(self, query: str, scope: dict | None = None) -> dict:
         query = (query or "").strip()
         if not query:
             return {"results": []}
         t0 = time.perf_counter()
-        hits = self._call(lambda: self._app.retriever.search(query, k=10))
+        sc = Scope.from_dict(scope)
+        extra = {} if sc.empty else {"scope": sc}
+        hits = self._call(lambda: self._app.retriever.search(query, k=10, **extra))
         return {"results": [chunk_dict(i, c) for i, c in enumerate(hits, start=1)],
                 "ms": int((time.perf_counter() - t0) * 1000)}
 
