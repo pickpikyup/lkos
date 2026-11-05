@@ -5,7 +5,7 @@
 
   const S = {
     view: "qa", mode: "ask", models: [], model: "", history: [], sources: [], index: { state: "idle" },
-    paused: false, cur: null, sel: null, lib: null, confirmRemove: null, problemsCount: 0,
+    paused: false, cur: null, sel: null, lib: null, confirmRemove: null, problemsCount: 0, libEdit: null,
     settings: { dev_mode: false },
     scope: { source_ids: [], file_types: [], days: 0, path: null }, scopeOpen: false, followUp: null,
     log: { tab: "run", after: 0, lines: [], level: "DEBUG", filter: "", file: "", warn: 0, calls: [] },
@@ -147,7 +147,7 @@
   function renderStatus() {
     const card = $("status-card"), i = S.index || {};
     const name = i.folder ? i.folder.split("/").filter(Boolean).pop() : "";
-    let cls = "idle", h = "索引已是最新", d = "每周自动更新";
+    let cls = "idle", h = "索引已是最新", d = "按各文件夹的设置自动更新";
     if (i.state === "running") {
       cls = "running"; h = "后台索引中"; d = `${name} · ${fmt(i.done)} / ${fmt(i.total)} 个文件`;
     } else if (i.state === "paused") {
@@ -800,13 +800,18 @@
       } else {
         h += `<div class="facts"><span>${fmt(s.files)} 个文件</span><span>${fmt(s.chunks)} 个文本块</span>
           ${s.failed ? `<span style="color:var(--danger)">失败 ${s.failed}</span>` : ""}
-          <span>${last ? "上次更新 " + esc(last) : "下次打开或空闲时继续"}</span><span>每周自动更新</span></div>`;
+          <span>${last ? "上次更新 " + esc(last) : "下次打开或空闲时继续"}</span><span>${REFRESH_LABEL[s.refresh] || "每周自动更新"}</span>
+          ${s.exclude.patterns.length ? `<span title="${esc(s.exclude.patterns.join("、"))}">排除 ${s.exclude.patterns.length} 条规则</span>` : ""}
+          ${s.exclude.types.length ? `<span>不索引 ${SKIP_TYPES.filter((t) => t[2].some((x) => s.exclude.types.includes(x))).map((t) => t[1]).join("、")}</span>` : ""}
+          ${s.ocr ? "<span>扫描件文字识别：开</span>" : ""}</div>`;
       }
+      if (S.libEdit === s.id) h += folderSettingsHTML(s, lib.ocr_available);
       const confirming = S.confirmRemove === s.id;
       h += `<div class="row" style="align-items:center">
         <span class="grow"></span>
         ${active ? (i.state === "paused" && i.reason === "manual" ? '<button type="button" class="btn small" data-action="resume">继续</button>' : '<button type="button" class="btn small" data-action="pause">暂停</button>') + '<button type="button" class="btn small" data-action="stop-index">停止</button>'
           : `<button type="button" class="btn small" data-update="${esc(s.path)}">立即更新</button>`}
+        <button type="button" class="btn small" data-folder-settings="${s.id}" aria-expanded="${S.libEdit === s.id}">设置</button>
         ${confirming ? `<span class="sub">只删除索引，不动原文件</span><button type="button" class="btn small danger" data-remove-yes="${s.id}">确认移除</button><button type="button" class="btn small" data-action="remove-no">取消</button>`
           : `<button type="button" class="btn small danger" data-remove="${s.id}">移除</button>`}
         </div></section>`;
@@ -820,6 +825,42 @@
     }
     el.innerHTML = h;
     bindDrop();
+  }
+
+  const REFRESH_LABEL = { daily: "每天自动更新", weekly: "每周自动更新", monthly: "每月自动更新", manual: "只手动更新" };
+  const SKIP_TYPES = [["pdf", "PDF", ["pdf"]], ["word", "Word", ["docx", "doc"]], ["ppt", "PowerPoint", ["pptx", "ppt"]], ["md", "Markdown", ["md"]]];
+
+  function folderSettingsHTML(s, ocrOK) {
+    const ex = s.exclude;
+    return `<form class="fset" data-fset="${s.id}">
+      <label class="fset-row"><span class="k">自动更新</span>
+        <select name="refresh" class="mini">${Object.entries(REFRESH_LABEL).map(([v, t]) => `<option value="${v}"${s.refresh === v ? " selected" : ""}>${t.replace("自动更新", "").replace("更新", "") || t}</option>`).join("")}</select>
+        <span class="hint">在接通电源、电脑空闲时进行</span></label>
+      <div class="fset-row top"><span class="k">排除</span>
+        <div class="grow"><textarea name="patterns" rows="3" class="mini" placeholder="每行一条，例如：&#10;归档&#10;*草稿*&#10;2019/*">${esc(ex.patterns.join("\n"))}</textarea>
+        <div class="hint">不含“/”的规则匹配任意一级的文件夹名或文件名；含“/”的规则从这个文件夹开始匹配路径。“*”代表任意字符。</div></div></div>
+      <div class="fset-row"><span class="k">不索引</span><div class="chips">${SKIP_TYPES.map((t) => `<label class="check"><input type="checkbox" name="type" value="${t[0]}"${t[2].every((x) => ex.types.includes(x)) ? " checked" : ""}> ${t[1]}</label>`).join("")}</div></div>
+      <div class="fset-row top"><span class="k">文字识别</span>
+        <div class="grow"><label class="check"><input type="checkbox" name="ocr"${s.ocr ? " checked" : ""}${ocrOK || s.ocr ? "" : " disabled"}> 识别扫描版 PDF 里的文字</label>
+        <div class="hint">${ocrOK ? "用 macOS 自带的文字识别，完全离线；每页大约 1–2 秒，会让索引变慢。" : "需要 macOS，并运行 source/scripts/setup_mac.sh 安装文字识别组件。"}</div></div></div>
+      <div class="fset-row actions"><span class="hint">改了排除规则或文字识别后，会自动重新索引这个文件夹</span>
+        <button type="button" class="btn small" data-action="fset-cancel">取消</button><button type="submit" class="btn small primary">保存</button></div>
+    </form>`;
+  }
+
+  async function saveFolderSettings(form) {
+    const id = Number(form.dataset.fset);
+    const types = [...form.querySelectorAll('input[name="type"]:checked')].flatMap((x) => SKIP_TYPES.find((t) => t[0] === x.value)[2]);
+    const settings = {
+      refresh: form.refresh.value,
+      exclude: { patterns: form.patterns.value.split("\n").map((x) => x.trim()).filter(Boolean), types },
+      ocr: form.ocr.checked,
+    };
+    const r = await api("set_source_settings", id, settings);
+    if (r.error) { toast(r.error); return; }
+    S.libEdit = null;
+    toast(r.reindex ? "已保存，正在按新设置重新索引" : "已保存");
+    refreshLibrary();
   }
 
   function bindDrop() {
@@ -871,6 +912,7 @@
     if (d.copySrc) { const s = currentSources().find((x) => x.n === Number(d.copySrc)); if (s) copy(s.text); return; }
     if (d.update) { await api("update_source", d.update); toast("已加入更新队列"); return; }
     if (d.remove) { S.confirmRemove = Number(d.remove); return renderLib(); }
+    if (d.folderSettings) { S.libEdit = S.libEdit === Number(d.folderSettings) ? null : Number(d.folderSettings); return renderLib(); }
     if (d.removeYes) {
       S.confirmRemove = null; toast("正在移除…");
       const r = await api("remove_source", Number(d.removeYes));
@@ -901,6 +943,7 @@
       case "resume": await api("resume_index"); return refreshLibrary();
       case "stop-index": await api("stop_index"); toast("已停止，下次空闲时或点“立即更新”继续"); return;
       case "remove-no": S.confirmRemove = null; return renderLib();
+      case "fset-cancel": S.libEdit = null; return renderLib();
     }
   });
 
@@ -935,6 +978,9 @@
     if (S.scopeOpen && !e.target.closest(".scope-wrap")) { S.scopeOpen = false; renderScope(); }
   });
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+  $("lib").addEventListener("submit", (e) => {
+    if (e.target.matches("form.fset")) { e.preventDefault(); saveFolderSettings(e.target); }
+  });
   // 输入：回车换行，⌘+回车（Windows/Linux 上 Ctrl+回车）发送。
   // 输入法保护：中文输入法里用回车选英文、Esc 取消候选时，键盘事件会带 isComposing 或 keyCode 229；
   // Safari / WebKit 还会在 compositionend 之后紧跟一次回车事件，所以输入法结束后 80 ms 内的按键也忽略。

@@ -26,6 +26,8 @@ from typing import Callable
 from lkos.app import App
 from lkos.errors import Cancelled, LkosError
 from lkos.evaluation.evaluate import is_not_found
+from lkos.parsers.ocr import available as ocr_available
+from lkos.storage.repository import REFRESH_DAYS
 from lkos.qa.extract import to_csv, to_markdown
 from lkos.indexing.scheduler import GateConfig, IndexGate
 from lkos.logs import get_logger, set_level, setup_logging
@@ -101,6 +103,21 @@ class _Gate:
                 self.w._set(state="paused", reason=reason)
                 last = reason
             time.sleep(0.5)
+
+
+def due_sources(sources: list[dict], now: datetime | None = None) -> list[dict]:
+    """到了自动更新时间的文件夹：按各自的周期（每天 / 每周 / 每月；“只手动”不自动更新）；
+    从没索引完的文件夹总是到期（下次空闲时接着做）。"""
+    now = now or datetime.now(timezone.utc)
+    out = []
+    for s in sources:
+        days = REFRESH_DAYS.get(s.get("refresh") or "weekly", AUTO_REFRESH_DAYS)
+        if days is None and s.get("last_indexed"):
+            continue
+        cutoff = (now - timedelta(days=days or AUTO_REFRESH_DAYS)).isoformat(timespec="seconds")
+        if (s.get("last_indexed") or "") < cutoff and Path(s["path"]).is_dir():
+            out.append(s)
+    return out
 
 
 class IndexWorker:
@@ -193,10 +210,8 @@ class IndexWorker:
             app.close()
 
     def _enqueue_stale(self, app: App) -> None:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=AUTO_REFRESH_DAYS)).isoformat(timespec="seconds")
-        for s in app.repo.list_sources():
-            if (s["last_indexed"] or "") < cutoff and Path(s["path"]).is_dir():
-                self.enqueue(s["path"], background=True)
+        for s in due_sources(app.repo.list_sources()):
+            self.enqueue(s["path"], background=True)
 
     def _index(self, app: App, folder: str, background: bool) -> None:
         self._cancel.clear()
@@ -527,7 +542,8 @@ class Bridge:
             return {"sources": self._app.repo.list_sources(), "problems": problems,
                     "stats": {"sources": s["sources"], "files": s["files_by_status"].get("indexed", 0),
                               "chunks": s["chunks_total"]},
-                    "index": self._indexer.state, "paused": self._indexer._paused.is_set()}
+                    "index": self._indexer.state, "paused": self._indexer._paused.is_set(),
+                    "ocr_available": ocr_available()}
         return self._call(run)
 
     def choose_folder(self) -> dict:
@@ -556,6 +572,35 @@ class Bridge:
         self._indexer.enqueue(str(folder))
         self._emit({"type": "library_changed"})
         return {"ok": True, "folder": str(folder), "files": n}
+
+    def source_settings(self, source_id: int) -> dict:
+        s = next((x for x in self._call(self._app.repo.list_sources) if x["id"] == int(source_id)), None)
+        if s is None:
+            return {"error": "没有这个文件夹"}
+        return {"id": s["id"], "path": s["path"], "refresh": s["refresh"], "exclude": s["exclude"], "ocr": s["ocr"],
+                "ocr_available": ocr_available()}
+
+    def set_source_settings(self, source_id: int, settings: dict) -> dict:
+        """settings：{"refresh", "exclude": {"patterns", "types"}, "ocr"}，只改给出的项。
+        排除规则或文字识别有变化时自动重新索引这个文件夹（被排除的文件会从索引里去掉）。"""
+        before = self.source_settings(source_id)
+        if "error" in before:
+            return before
+        settings = settings or {}
+        try:
+            self._call(lambda: self._app.repo.update_source_settings(
+                int(source_id), refresh=settings.get("refresh"), exclude=settings.get("exclude"),
+                ocr=settings.get("ocr")))
+        except ValueError as e:
+            return {"error": str(e)}
+        after = self.source_settings(source_id)
+        reindex = after["exclude"] != before["exclude"] or after["ocr"] != before["ocr"]
+        log.info("文件夹设置已保存：%s：更新周期 %s，排除 %s，文字识别 %s%s", after["path"], after["refresh"],
+                 after["exclude"], "开" if after["ocr"] else "关", "，重新索引" if reindex else "")
+        if reindex and Path(after["path"]).is_dir():
+            self._indexer.enqueue(after["path"])
+        self._emit({"type": "library_changed"})
+        return {**after, "reindex": reindex}
 
     def update_source(self, path: str) -> dict:
         return {"ok": self._indexer.enqueue(str(path))}

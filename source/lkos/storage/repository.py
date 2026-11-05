@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -40,6 +41,10 @@ class IndexRun:
     aborted: bool = False
 
 
+# 每个文件夹的自动更新周期（天）；manual 表示只在手动点“立即更新”时更新
+REFRESH_DAYS = {"manual": None, "daily": 1, "weekly": 7, "monthly": 30}
+
+
 class Repository:
     def __init__(self, conn: sqlite3.Connection, owner_id: str = "local"):
         self.conn = conn
@@ -71,13 +76,50 @@ class Repository:
     def list_sources(self) -> list[dict]:
         """来源文件夹及其文件数、文本块数、最近一次索引时间。"""
         rows = self.conn.execute(
-            """SELECT s.id, s.path,
+            """SELECT s.id, s.path, s.refresh, s.exclude_json, s.ocr,
                       (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id) AS files,
                       (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id AND f.status = 'failed') AS failed,
                       (SELECT COUNT(*) FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.source_id = s.id) AS chunks,
                       (SELECT MAX(r.finished_at) FROM index_runs r WHERE r.source_id = s.id AND r.aborted = 0) AS last_indexed
                FROM sources s ORDER BY s.id""").fetchall()
-        return [dict(r) for r in rows]
+        return [self._source_row(dict(r)) for r in rows]
+
+    @staticmethod
+    def _source_row(d: dict) -> dict:
+        try:
+            ex = json.loads(d.pop("exclude_json", None) or "{}")
+        except ValueError:
+            ex = {}
+        d["exclude"] = {"patterns": [str(x) for x in ex.get("patterns") or []],
+                        "types": [str(x).lower().lstrip(".") for x in ex.get("types") or []]}
+        d["ocr"] = bool(d.get("ocr"))
+        d["refresh"] = d.get("refresh") or "weekly"
+        return d
+
+    def source_settings(self, path: str) -> dict | None:
+        """文件夹的设置：refresh（manual / daily / weekly / monthly）、exclude（patterns、types）、ocr。"""
+        row = self.conn.execute("SELECT id, path, refresh, exclude_json, ocr FROM sources WHERE path = ?",
+                                (path,)).fetchone()
+        return self._source_row(dict(row)) if row else None
+
+    def update_source_settings(self, source_id: int, refresh: str | None = None, exclude: dict | None = None,
+                               ocr: bool | None = None) -> None:
+        sets, args = [], []
+        if refresh is not None:
+            if refresh not in REFRESH_DAYS:
+                raise ValueError(f"更新周期只能是 {'、'.join(REFRESH_DAYS)}")
+            sets.append("refresh = ?")
+            args.append(refresh)
+        if exclude is not None:
+            clean = {"patterns": [p.strip() for p in exclude.get("patterns") or [] if str(p).strip()],
+                     "types": sorted({str(t).lower().lstrip(".") for t in exclude.get("types") or [] if str(t).strip()})}
+            sets.append("exclude_json = ?")
+            args.append(json.dumps(clean, ensure_ascii=False))
+        if ocr is not None:
+            sets.append("ocr = ?")
+            args.append(1 if ocr else 0)
+        if sets:
+            self.conn.execute(f"UPDATE sources SET {', '.join(sets)} WHERE id = ?", (*args, int(source_id)))
 
     def remove_source(self, source_id: int) -> int:
         """删除来源文件夹及其全部索引（不动原文件），返回删除的文件数。"""

@@ -123,6 +123,44 @@ def source_remove(number: int = typer.Argument(..., min=1, help="编号（见 lk
     console.print(f"已移除 {r['path']}，删除了 {n} 个文件的索引。")
 
 
+@source_app.command("set")
+def source_set(number: int = typer.Argument(..., min=1, help="编号（见 lkos source list）"),
+               refresh: Optional[str] = typer.Option(None, "--refresh", help="自动更新周期：daily / weekly / monthly / manual"),
+               exclude: Optional[list[str]] = typer.Option(None, "--exclude", "-x",
+                                                           help="排除规则，可写多次，如 -x 归档 -x '2019/*'；写 -x '' 清空"),
+               skip_type: Optional[list[str]] = typer.Option(None, "--skip-type", help="不索引的扩展名，如 --skip-type ppt"),
+               ocr: Optional[bool] = typer.Option(None, "--ocr/--no-ocr", help="扫描版 PDF 文字识别（macOS）")):
+    """查看或修改文件夹设置（不带选项时只显示当前设置）。改了排除规则后运行 lkos update 生效。"""
+    try:
+        a = open_app()
+    except LkosError as e:
+        fail(e)
+    try:
+        rows = a.repo.list_sources()
+        if number > len(rows):
+            err.print(f"没有编号 {number}，共 {len(rows)} 个文件夹。")
+            raise typer.Exit(code=1)
+        r = rows[number - 1]
+        ex = None
+        if exclude is not None or skip_type is not None:
+            ex = {"patterns": [x for x in (exclude if exclude is not None else r["exclude"]["patterns"]) if x],
+                  "types": [x for x in (skip_type if skip_type is not None else r["exclude"]["types"]) if x]}
+        try:
+            a.repo.update_source_settings(r["id"], refresh=refresh, exclude=ex, ocr=ocr)
+        except ValueError as e:
+            err.print(str(e))
+            raise typer.Exit(code=1)
+        s = a.repo.source_settings(r["path"])
+    finally:
+        a.close()
+    names = {"daily": "每天", "weekly": "每周", "monthly": "每月", "manual": "只手动"}
+    console.print(f"[bold]{s['path']}[/bold]")
+    console.print(f"  自动更新：{names.get(s['refresh'], s['refresh'])}")
+    console.print(f"  排除规则：{'、'.join(s['exclude']['patterns']) or '无'}")
+    console.print(f"  不索引类型：{'、'.join(s['exclude']['types']) or '无'}")
+    console.print(f"  扫描件文字识别：{'开' if s['ocr'] else '关'}")
+
+
 @app.command()
 def update(when_idle: bool = typer.Option(False, "--when-idle", help="闲时索引：问答、用电池、使用电脑时暂停")):
     """更新所有已添加文件夹的索引（只处理新增、修改、删除的文件）。"""

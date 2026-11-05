@@ -6,9 +6,10 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
-import time
 import os
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -59,6 +60,23 @@ def norm_path(path: Path) -> str:
     return unicodedata.normalize("NFC", str(path))
 
 
+def is_excluded(rel: Path, patterns: list[str]) -> bool:
+    """排除规则：不含“/”的规则匹配任意一级的文件夹名或文件名（如“归档”“*草稿*”“*.tmp”）；
+    含“/”的规则匹配相对文件夹根的路径（如“2019/*”“项目/旧版”）。不区分大小写。"""
+    parts = [x.lower() for x in rel.parts]
+    full = "/".join(parts)
+    for pat in patterns:
+        pat = pat.strip().strip("/").lower()
+        if not pat:
+            continue
+        if "/" in pat:
+            if fnmatch.fnmatchcase(full, pat) or fnmatch.fnmatchcase(full, pat + "/*"):
+                return True
+        elif any(fnmatch.fnmatchcase(x, pat) for x in parts):
+            return True
+    return False
+
+
 class Indexer:
     def __init__(self, cfg: Config, repo: Repository, gateway, chunker: Chunker | None = None):
         self.cfg = cfg
@@ -68,20 +86,33 @@ class Indexer:
 
     # ---------- 遍历 ----------
     def walk(self, folder: Path) -> Iterator[Path]:
-        files = list(self._walk(folder))
+        """文件夹里要索引的文件（按这个文件夹的排除设置过滤）。"""
+        folder = Path(folder)
+        settings = self.repo.source_settings(norm_path(folder.expanduser().resolve()))
+        exclude = settings["exclude"] if settings else {"patterns": [], "types": []}
+        files = list(self._walk(folder, exclude))
         if self.cfg.indexing.order == "recent_first":
             # 最近修改的先处理：闲时索引被打断时，最常用的文档已经可以检索
             files.sort(key=lambda p: (-p.stat().st_mtime, str(p)))
         yield from files
 
-    def _walk(self, folder: Path) -> Iterator[Path]:
+    def _walk(self, folder: Path, exclude: dict | None = None) -> Iterator[Path]:
         max_bytes = self.cfg.indexing.max_file_size_mb * 1024 * 1024
+        patterns = (exclude or {}).get("patterns") or []
+        skip_types = {"." + t for t in (exclude or {}).get("types") or []}
         for dirpath, dirnames, filenames in os.walk(folder, followlinks=False):
             if self.cfg.indexing.skip_hidden:
                 dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            rel_dir = Path(dirpath).relative_to(folder)
+            if patterns:
+                dirnames[:] = [d for d in dirnames if not is_excluded(rel_dir / d, patterns)]
             dirnames.sort()
             for name in sorted(filenames):
                 if self.cfg.indexing.skip_hidden and name.startswith("."):
+                    continue
+                if skip_types and Path(name).suffix.lower() in skip_types:
+                    continue
+                if patterns and is_excluded(rel_dir / name, patterns):
                     continue
                 if name.startswith("~$"):  # Office / WPS 锁文件
                     continue

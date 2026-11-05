@@ -290,7 +290,15 @@ def test_source_commands_and_update(cli, corpus):
     (corpus / "新文件.md").write_text("# 新文件\n\n年会在三楼举办。\n", encoding="utf-8")
     out = cli("update")
     assert "新索引 1" in out
+    out = cli("source", "set", "1")
+    assert "自动更新：每周" in out and "排除规则：无" in out
+    out = cli("source", "set", "1", "--refresh", "monthly", "-x", "新文件*", "--ocr")
+    assert "自动更新：每月" in out and "排除规则：新文件*" in out and "文字识别：开" in out
+    assert "只能是" in cli("source", "set", "1", "--refresh", "yearly", expect=1)
+    out = cli("update")
+    assert "删除 1" in out or "删除了 1" in out or "移除 1" in out, out
+    assert "排除规则：无" in cli("source", "set", "1", "-x", "")
     out = cli("source", "remove", "1", "--yes")
-    assert "删除了 5 个文件的索引" in out
+    assert "删除了 4 个文件的索引" in out
     assert "还没有添加文件夹" in cli("source", "list")
     assert "还没有添加文件夹" in cli("update")

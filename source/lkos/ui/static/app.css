@@ -312,3 +312,12 @@ input.mini { width: 140px; }
 .aspects .pill { padding: 2px 10px; border-radius: 999px; background: var(--soft); color: var(--ink-2); }
 .side-scroll, .side-group { min-width: 0; }
 .q-scope { color: var(--muted); }
+.fset { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border-radius: 10px; background: var(--soft); }
+.fset-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; }
+.fset-row.top { align-items: flex-start; }
+.fset-row .k { flex: 0 0 64px; font-weight: 600; color: var(--ink-2); padding-top: 2px; }
+.fset-row .grow { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 4px; }
+.fset textarea { width: 100%; resize: vertical; font: inherit; font-size: 13px; padding: 8px 10px; }
+.fset .check { display: inline-flex; align-items: center; gap: 6px; }
+.fset textarea.mini { height: auto; }
+.fset-row.actions { justify-content: flex-end; }
