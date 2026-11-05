@@ -93,8 +93,9 @@ class ModelGateway:
 
     # ---------- chat ----------
     def chat(self, task: str, messages: list[dict], model_override: str | None = None,
-             on_token: TokenCallback | None = None) -> tuple[ChatResult, str]:
-        """返回 (结果, 实际使用的模型引用)。"""
+             on_token: TokenCallback | None = None, max_tokens: int | None = None,
+             log_as: str | None = None) -> tuple[ChatResult, str]:
+        """返回 (结果, 实际使用的模型引用)。max_tokens：覆盖任务配置的输出上限；log_as：调用日志里的任务名。"""
         ref = self.resolve(task, model_override)
         pname, model = split_model_ref(ref)
         self._check_privacy(pname)
@@ -103,10 +104,11 @@ class ModelGateway:
         tcfg = self.cfg.tasks.get(task)
         opts = ChatOptions(
             temperature=tcfg.temperature if tcfg else 0.3,
-            max_tokens=tcfg.max_tokens if tcfg else 1024,
+            max_tokens=max_tokens or (tcfg.max_tokens if tcfg else 1024),
             num_ctx=mcfg.context_window,
             think=mcfg.think,
         )
+        task = log_as or task
         try:
             result = provider.chat(model, messages, opts, on_token=on_token)
         except LkosError as e:

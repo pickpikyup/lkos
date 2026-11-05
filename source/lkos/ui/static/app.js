@@ -41,7 +41,11 @@
       }
       if (e.type === "library_changed") { refreshLibrary(); return; }
       if (!c || c.qid !== e.qid) return;
-      if (e.type === "sources") {
+      if (e.type === "progress") {
+        c.progress = e;
+        if (c.phase === "retrieving") c.phase = "reading";
+        renderQA();
+      } else if (e.type === "sources") {
         c.sources = e.sources; c.retrievalMs = e.ms; c.phase = "reading"; c.readingSince = Date.now();
         S.sel = e.sources.length ? 1 : null;
         renderQA(); renderAside();
@@ -182,7 +186,8 @@
   }
 
   function questionBlock(q, search) {
-    return `<div><div class="q-label">${search ? "你搜索" : "你问"}</div><h1 class="q-title">${esc(q)}</h1></div>`;
+    const label = search ? "你搜索" : (/^总结：《/.test(q) ? "全文总结" : "你问");
+    return `<div><div class="q-label">${label}</div><h1 class="q-title">${esc(q)}</h1></div>`;
   }
 
   function renderQA() {
@@ -210,6 +215,18 @@
     if (c.phase === "search") {
       h += `<div class="found"><span>${c.results.length ? `找到 ${c.results.length} 个相关片段 · ${sec(c.ms)}` : "没有找到相关内容"}</span></div>`;
       h += `<div class="card-list">${c.results.map((r) => hitCard(r)).join("")}</div>`;
+    } else if (c.kind === "summary" && (c.phase === "retrieving" || c.phase === "reading")) {
+      const p = c.progress || {};
+      const parts = c.sources.length;
+      const mapping = p.stage === "map", final = p.stage === "final";
+      const step = (cls, label, sub) => `<li class="${cls}"><span class="ic" aria-hidden="true">${cls === "done" ? checkSvg() : ""}</span>
+        <span class="label">${label}</span>${sub ? `<span class="sub">${sub}</span>` : ""}</li>`;
+      h += `<ol class="steps" aria-label="进度">
+        ${step(parts ? "done" : "now", parts ? `已读取全文，分成 ${parts} 个部分` : "正在读取全文", parts ? "右侧可以先看各部分原文" : "")}
+        ${p.total > 1 || mapping ? step(final ? "done" : (mapping ? "now" : ""), `逐部分提炼要点${mapping ? `（${p.done} / ${p.total}）` : ""}`,
+          mapping ? "每部分大约 15–30 秒，可以随时停止" : "") : ""}
+        ${step(final ? "now" : "", "汇总成全文总结并标注出处", final ? "通常 10–20 秒后开始出字" : "")}</ol>
+        <div class="skeleton" aria-hidden="true"><div style="width:92%"></div><div style="width:78%"></div><div style="width:54%"></div></div>`;
     } else if (c.phase === "retrieving" || c.phase === "reading") {
       const reading = c.phase === "reading";
       const waited = reading ? Math.floor((Date.now() - c.readingSince) / 1000) : 0;
@@ -239,7 +256,9 @@
   }
 
   function doneHTML(r) {
-    let h = r.context.length ? foundPills(r.context) : "";
+    const isSummary = /^总结：《/.test(r.question);
+    let h = !r.context.length ? "" : isSummary
+      ? `<div class="found"><span>按 ${r.context.length} 个部分汇总 · 点编号查看对应原文</span></div>` : foundPills(r.context);
     h += `<div class="answer">${answerHTML(r.answer, false)}</div>`;
     const parts = [];
     if (r.ttft_ms != null) parts.push("首字 " + sec(r.ttft_ms));
@@ -325,6 +344,7 @@
           <div class="acts">
             <button type="button" class="btn primary" data-open="${esc(s.path)}">${s.type === "pdf" && s.page ? `打开（第 ${s.page} 页）` : "打开原文件"}</button>
             <button type="button" class="btn" data-reveal="${esc(s.path)}">在访达中显示</button>
+            <button type="button" class="btn" data-summarize="${esc(s.path)}">总结这份文件</button>
             <button type="button" class="btn" data-copy-src="${s.n}">复制原文</button>
           </div></div>`;
       } else {
@@ -397,6 +417,23 @@
       if (!S.cur || S.cur.phase !== "reading") { if (!S.cur || S.cur.phase !== "retrieving") clearInterval(ticker); return; }
       if (w) w.textContent = `已等待 ${Math.floor((Date.now() - S.cur.readingSince) / 1000)} 秒 · 通常 5–10 秒后开始出字`;
     }, 1000);
+  }
+
+  async function summarizeFile(path) {
+    if (!$("generating").hidden) { toast("正在回答，请稍等或先停止"); return; }
+    if (S.view !== "qa") showView("qa");
+    const name = path.split("/").pop();
+    S.cur = { phase: "retrieving", kind: "summary", question: `总结：《${name}》`, text: "", sources: [] };
+    S.sel = null;
+    renderQA(); renderAside(); renderSide();
+    setGenerating(true);
+    try {
+      const r = await api("summarize", path);
+      if (r.error) { S.cur.phase = "error"; S.cur.error = r.error; setGenerating(false); renderQA(); return; }
+      S.cur.qid = r.qid;
+    } catch (e) {
+      S.cur.phase = "error"; S.cur.error = String(e.message || e); setGenerating(false); renderQA();
+    }
   }
 
   function setMode(mode) {
@@ -657,6 +694,7 @@
     if (d.lib) return showView("lib");
     if (d.open != null) { const r = await api("open_file", d.open); if (r.error) toast(r.error); return; }
     if (d.reveal != null) { const r = await api("reveal", d.reveal); if (r.error) toast(r.error); return; }
+    if (d.summarize != null) return summarizeFile(d.summarize);
     if (d.copySrc) { const s = currentSources().find((x) => x.n === Number(d.copySrc)); if (s) copy(s.text); return; }
     if (d.update) { await api("update_source", d.update); toast("已加入更新队列"); return; }
     if (d.remove) { S.confirmRemove = Number(d.remove); return renderLib(); }
@@ -669,7 +707,9 @@
       case "add": return addFolder();
       case "lib": return showView("lib");
       case "copy": return copy(S.cur.record.answer.replace(/\s*\[\d+(?:\s*[,，、]\s*\d+)*\]/g, ""));
-      case "again": return submit(S.cur.question, true);
+      case "again":
+        if (S.cur.record && /^总结：《/.test(S.cur.question) && S.cur.record.context.length) return summarizeFile(S.cur.record.context[0].path);
+        return submit(S.cur.question, true);
       case "ask-anyway": return submit(S.cur.question, true);
       case "search-instead": setMode("search"); $("q").value = S.cur ? S.cur.question : ""; return;
       case "update-all": { const r = await api("update_all"); toast(r.queued ? `${r.queued} 个文件夹已加入更新队列` : "已经在更新了"); return; }

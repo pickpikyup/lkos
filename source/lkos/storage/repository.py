@@ -355,6 +355,14 @@ class Repository:
         ).fetchall()
         return [self._retrieved(r) for r in rows]
 
+    def chunks_of_file(self, path: str) -> list[RetrievedChunk]:
+        """某个文件的全部文本块，按原文顺序（总结全文用）。"""
+        rows = self.conn.execute(
+            """SELECT c.*, f.path AS file_path, f.file_type AS file_type
+               FROM chunks c JOIN files f ON f.id = c.file_id WHERE f.path = ? ORDER BY c.ordinal""",
+            (path,)).fetchall()
+        return [self._retrieved(r) for r in rows]
+
     def files_of_chunks(self, chunk_ids: Sequence[int]) -> dict[int, int]:
         """chunk_id → file_id（文档排序用）。"""
         if not chunk_ids:

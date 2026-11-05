@@ -377,6 +377,58 @@ class Bridge:
                 "cited": json.loads(row["cited_json"]), "model": row["model"], "ttft_ms": row["ttft_ms"],
                 "latency_ms": row["latency_ms"], "asked_at": row["asked_at"]}
 
+    def summarize(self, path: str) -> dict:
+        """总结整份文件（分段提炼 + 汇总），过程与提问一样推送 sources / progress / token / done。"""
+        path = str(path or "")
+        if self._busy.is_set():
+            return {"error": "上一个任务还在进行中"}
+        if not self._call(lambda: self._app.repo.get_file(path)):
+            return {"error": "这个文件还没有索引"}
+        self._busy.set()
+        self._cancel.clear()
+        qid = f"s{int(time.time() * 1000)}"
+        self._qa.submit(self._run_summary, qid, path)
+        return {"qid": qid, "question": f"总结：《{Path(path).name}》"}
+
+    def _run_summary(self, qid: str, path: str) -> None:
+        name = Path(path).name
+        question = f"总结：《{name}》"
+        t0 = time.perf_counter()
+
+        def on_context(ctx) -> None:
+            log.info("总结《%s》：分成 %d 个部分", name, len(ctx))
+            self._emit({"type": "sources", "qid": qid, "ms": int((time.perf_counter() - t0) * 1000),
+                        "sources": [chunk_dict(i, c) for i, c in enumerate(ctx, start=1)]})
+
+        def on_progress(stage: str, done: int, total: int) -> None:
+            log.debug("总结进度：%s %d/%d", stage, done, total)
+            self._emit({"type": "progress", "qid": qid, "stage": stage, "done": done, "total": total})
+
+        def on_token(t: str) -> None:
+            if self._cancel.is_set():
+                raise Cancelled("已停止生成")
+            self._emit({"type": "token", "qid": qid, "text": t})
+
+        try:
+            log.info("开始总结：%s", path)
+            ans = self._app.summarizer.summarize_file(path, on_progress=on_progress, on_token=on_token,
+                                                      on_context=on_context, cancelled=self._cancel.is_set)
+            ans.latency_ms = int((time.perf_counter() - t0) * 1000)
+            record = self._save(question, ans)
+            log.info("总结完成《%s》：共 %.0f 秒，出处 %s", name, ans.latency_ms / 1000, record["cited"] or "无")
+            self._emit({"type": "done", "qid": qid, "record": record})
+        except Cancelled:
+            log.info("已停止总结")
+            self._emit({"type": "stopped", "qid": qid})
+        except LkosError as e:
+            log.error("总结出错：%s", e)
+            self._emit({"type": "error", "qid": qid, "message": str(e)})
+        except Exception as e:  # noqa: BLE001
+            log.exception("总结出错")
+            self._emit({"type": "error", "qid": qid, "message": f"出错了：{e}"})
+        finally:
+            self._busy.clear()
+
     def stop(self) -> dict:
         self._cancel.set()
         return {"ok": True}
