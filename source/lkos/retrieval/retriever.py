@@ -75,12 +75,13 @@ class Retriever:
         return qlang, mode, (qlang if mode == "strict" else None)
 
     def search(self, query: str, k: int | None = None, lang: str | None = "auto",
-               mode: str | None = None, strategy: str | None = None) -> list[RetrievedChunk]:
-        """strategy：doc_first（默认，先选文档再选段落）| flat（v0.2：直接取融合分最高的 k 个块）。"""
+               mode: str | None = None, strategy: str | None = None, scope=None) -> list[RetrievedChunk]:
+        """strategy：flat（默认，直接取融合分最高的 k 个块）| doc_first（先选文档再选段落）。
+        scope：lkos.types.Scope，限定文件夹 / 文件类型 / 修改时间 / 单个文件 / 标签。"""
         if self.marker is None:
-            return self._search(query, k, lang, mode, strategy)
+            return self._search(query, k, lang, mode, strategy, scope)
         with self.marker.active():
-            return self._search(query, k, lang, mode, strategy)
+            return self._search(query, k, lang, mode, strategy, scope)
 
     def neighbors(self, chunk: RetrievedChunk) -> list[RetrievedChunk]:
         """片段前后各一个相邻块（不含片段本身覆盖的块）。"""
@@ -90,7 +91,7 @@ class Retriever:
         return self.repo.neighbors(chunk.file_id, [o for o in (chunk.ordinal - 1, end + 1) if o >= 0])
 
     def _search(self, query: str, k: int | None, lang: str | None, mode: str | None,
-                strategy: str | None) -> list[RetrievedChunk]:
+                strategy: str | None, scope=None) -> list[RetrievedChunk]:
         r = self.cfg.retrieval
         k = k or r.top_k
         strategy = strategy or r.strategy
@@ -100,9 +101,14 @@ class Retriever:
         qlang, mode, lang_filter = self.resolve(query, lang, mode)
 
         qvec = self.gateway.embed([query], task="embed_query")[0]
-        vec_ids = [cid for cid, _ in self.repo.knn(qvec, n, lang_filter, candidates=r.vector_candidates)]
+        scoped = scope is not None and not scope.empty
+        if scoped:
+            vec_ids = [cid for cid, _ in self.repo.knn_scoped(qvec, n, scope, lang_filter)]
+        else:
+            vec_ids = [cid for cid, _ in self.repo.knn(qvec, n, lang_filter, candidates=r.vector_candidates)]
         fts_query = build_or_query(query, qlang)
-        fts_ids = [cid for cid, _ in self.repo.fts_search(fts_query, n, lang_filter)] if fts_query else []
+        fts_ids = ([cid for cid, _ in self.repo.fts_search(fts_query, n, lang_filter, scope=scope if scoped else None)]
+                   if fts_query else [])
 
         fused = rrf([vec_ids, fts_ids], k=r.rrf_k)
         boost: dict[int, float] = {}

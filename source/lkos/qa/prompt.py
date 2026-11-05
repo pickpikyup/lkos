@@ -86,11 +86,28 @@ def fit_context(question: str, hits: Sequence[RetrievedChunk], lang: str, num_ct
     return out
 
 
-def build_messages(question: str, context: Sequence[RetrievedChunk], lang: str) -> list[dict]:
+HISTORY_ANSWER_CHARS = 400   # 追问时带上的上一轮回答最多这么长（去掉出处编号）
+
+
+def history_turns(history) -> list[dict]:
+    """上一轮问答 → 对话消息（只保留最近 2 轮；回答去掉 [n]，因为编号对应的是上一轮的资料）。"""
+    out: list[dict] = []
+    for q, a in (history or [])[-2:]:
+        a = re.sub(r"\s*\[\d+(?:\s*[,，、]\s*\d+)*\]", "", a or "").strip()[:HISTORY_ANSWER_CHARS]
+        out += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
+    return out
+
+
+def history_tokens(history) -> int:
+    return sum(estimate_tokens(m["content"]) + 4 for m in history_turns(history))
+
+
+def build_messages(question: str, context: Sequence[RetrievedChunk], lang: str, history=None) -> list[dict]:
     key = lang_key(lang)
     src_label, q_label = LABELS[key]
     sources = "\n\n".join(format_source(i, c) for i, c in enumerate(context, start=1))
     return [
         {"role": "system", "content": SYSTEM_PROMPTS[key]},
+        *history_turns(history),
         {"role": "user", "content": f"{src_label}\n{sources}\n\n{q_label}{question}"},
     ]

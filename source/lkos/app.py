@@ -12,6 +12,8 @@ from lkos.indexing.indexer import Indexer
 from lkos.indexing.scheduler import ActivityMarker, GateConfig, IndexGate
 from lkos.qa.service import QAService
 from lkos.qa.summarize import Summarizer
+from lkos.qa.extract import Extractor
+from lkos.qa.analysis import Analyzer
 from lkos.retrieval.retriever import Retriever
 from lkos.storage.db import connect, init_schema
 from lkos.storage.repository import Repository
@@ -31,6 +33,8 @@ class App:
     qa: QAService
     marker: ActivityMarker
     summarizer: Summarizer = None
+    extractor: Extractor = None
+    analyzer: Analyzer = None
 
     @classmethod
     def open(cls, home: Path | None = None, config_path: Path | None = None,
@@ -54,6 +58,8 @@ class App:
             indexer=Indexer(cfg, repo, gateway), retriever=retriever,
             qa=QAService(cfg, retriever, gateway, marker=marker), marker=marker,
             summarizer=Summarizer(cfg, repo, gateway, marker=marker),
+            extractor=Extractor(cfg, repo, retriever, gateway, marker=marker),
+            analyzer=Analyzer(cfg, retriever, gateway, marker=marker),
         )
 
     def index_gate(self, on_pause=None, **probes) -> IndexGate:

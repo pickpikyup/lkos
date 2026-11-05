@@ -142,3 +142,26 @@ class ProgressEvent:
     action: str  # indexed | skipped | moved | failed | unchanged
     files_seen: int
     detail: str | None = None
+
+
+@dataclass
+class Scope:
+    """检索范围：都为空表示全部资料。since 为修改时间下限（Unix 秒）。"""
+    source_ids: list[int] | None = None
+    file_types: list[str] | None = None
+    since: float | None = None
+    path: str | None = None            # 只在这一个文件里找
+    tags: list[str] | None = None
+
+    @property
+    def empty(self) -> bool:
+        return not (self.source_ids or self.file_types or self.since or self.path or self.tags)
+
+    @classmethod
+    def from_dict(cls, d: dict | None) -> "Scope":
+        d = d or {}
+        return cls(source_ids=[int(x) for x in d.get("source_ids") or []] or None,
+                   file_types=[str(x) for x in d.get("file_types") or []] or None,
+                   since=float(d["since"]) if d.get("since") else None,
+                   path=d.get("path") or None,
+                   tags=[str(x) for x in d.get("tags") or []] or None)

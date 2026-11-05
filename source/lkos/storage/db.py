@@ -49,6 +49,7 @@ def init_schema(conn: sqlite3.Connection, embedding_model: str, embedding_dim: i
             )
     sql = resources.files("lkos.storage").joinpath("schema.sql").read_text("utf-8")
     conn.executescript(sql.replace("{dim}", str(int(embedding_dim))))
+    _add_missing_columns(conn)
     meta = get_meta(conn)
     if "embedding_model" not in meta:
         set_meta(conn, "schema_version", SCHEMA_VERSION)
@@ -56,6 +57,28 @@ def init_schema(conn: sqlite3.Connection, embedding_model: str, embedding_dim: i
         set_meta(conn, "embedding_dim", str(embedding_dim))
         return
     check_embedding(meta, embedding_model, embedding_dim)
+
+
+# 在 v2 格式内新增的列：旧数据库打开时自动补上（只加列，不改已有数据，不需要重建索引）
+ADDED_COLUMNS = {
+    "sources": [
+        ("refresh", "TEXT NOT NULL DEFAULT 'weekly'"),       # manual / daily / weekly / monthly
+        ("exclude_json", "TEXT NOT NULL DEFAULT '{}'"),      # {"dirs": [...], "exts": [...]}
+        ("ocr", "INTEGER NOT NULL DEFAULT 0"),
+    ],
+    "qa_history": [
+        ("kind", "TEXT NOT NULL DEFAULT 'qa'"),              # qa / summary / extract / analysis
+        ("extra_json", "TEXT NOT NULL DEFAULT '{}'"),        # 提取的表格、深度分析的子问题等
+    ],
+}
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    for table, cols in ADDED_COLUMNS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in cols:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def check_embedding(meta: dict[str, str], embedding_model: str, embedding_dim: int) -> None:

@@ -120,3 +120,12 @@ CREATE TABLE IF NOT EXISTS qa_history (
     ttft_ms       INTEGER,
     latency_ms    INTEGER
 );
+
+-- 分类与标签：model = 模型生成，user = 用户修改
+CREATE TABLE IF NOT EXISTS file_tags (
+    file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    tag         TEXT NOT NULL,
+    origin      TEXT NOT NULL DEFAULT 'model',
+    PRIMARY KEY (file_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_file_tags_tag ON file_tags(tag);

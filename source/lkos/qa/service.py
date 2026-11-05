@@ -8,7 +8,7 @@ from lkos.config import Config
 from lkos.gateway.base import TokenCallback
 from lkos.indexing.language import detect_lang
 from lkos.qa.citations import validate_citations
-from lkos.qa.prompt import NO_CONTEXT_MESSAGE, build_messages, fit_context, lang_key
+from lkos.qa.prompt import NO_CONTEXT_MESSAGE, build_messages, fit_context, history_tokens, lang_key
 from lkos.retrieval.select import merge_adjacent
 from lkos.types import Answer, RetrievedChunk
 
@@ -34,27 +34,33 @@ class QAService:
 
     def ask(self, question: str, k: int | None = None, model_override: str | None = None,
             lang: str | None = "auto", on_token: TokenCallback | None = None,
-            mode: str | None = None, strategy: str | None = None, on_context=None) -> Answer:
+            mode: str | None = None, strategy: str | None = None, on_context=None, scope=None,
+            history: list[tuple[str, str]] | None = None) -> Answer:
         """on_context(片段列表)：片段选好、开始生成之前调用，界面据此先显示找到的资料。"""
         if self.marker is None:
-            return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context)
+            return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context, scope, history)
         with self.marker.active():
-            return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context)
+            return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context, scope, history)
 
-    def _ask(self, question, k, model_override, lang, on_token, mode, strategy, on_context=None) -> Answer:
+    def _ask(self, question, k, model_override, lang, on_token, mode, strategy, on_context=None, scope=None,
+             history=None) -> Answer:
         question = question.strip()
         qlang = answer_lang(question, self.cfg)
-        if strategy is None:
-            hits = self.retriever.search(question, k=k, lang=lang, mode=mode)
-        else:
-            hits = self.retriever.search(question, k=k, lang=lang, mode=mode, strategy=strategy)
+        extra = {}
+        if strategy is not None:
+            extra["strategy"] = strategy
+        if scope is not None and not scope.empty:
+            extra["scope"] = scope
+        # 追问：检索时把上一轮的问题带上（“那第二点呢”这类问题本身缺少关键词）
+        query = question if not history else f"{history[-1][0]}\n{question}"
+        hits = self.retriever.search(query, k=k, lang=lang, mode=mode, **extra)
         if not hits:
             return Answer(text=NO_CONTEXT_MESSAGE[lang_key(qlang)], no_context=True)
 
         ref = self.gateway.resolve(TASK, model_override)
         num_ctx = self.cfg.chat_model(ref).context_window
         task = self.cfg.tasks[TASK]
-        context = fit_context(question, hits, qlang, num_ctx, task.max_tokens)
+        context = fit_context(question, hits, qlang, num_ctx - history_tokens(history), task.max_tokens)
         if not context:
             return Answer(text=NO_CONTEXT_MESSAGE[lang_key(qlang)], no_context=True)
         if (strategy or self.cfg.retrieval.strategy) == "doc_first":
@@ -63,7 +69,7 @@ class QAService:
 
         if on_context is not None:
             on_context(context)
-        messages = build_messages(question, context, qlang)
+        messages = build_messages(question, context, qlang, history=history)
         result, _ = self.gateway.chat(TASK, messages, model_override=model_override, on_token=on_token)
         text, citations, invalid = validate_citations(result.text, context)
         return Answer(

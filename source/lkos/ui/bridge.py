@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -25,9 +26,10 @@ from typing import Callable
 from lkos.app import App
 from lkos.errors import Cancelled, LkosError
 from lkos.evaluation.evaluate import is_not_found
+from lkos.qa.extract import to_csv, to_markdown
 from lkos.indexing.scheduler import GateConfig, IndexGate
 from lkos.logs import get_logger, set_level, setup_logging
-from lkos.types import Answer, RetrievedChunk
+from lkos.types import Answer, RetrievedChunk, Scope
 
 log = get_logger("app")
 ilog = get_logger("index")
@@ -297,29 +299,24 @@ class Bridge:
             self._qa.submit(lambda: self._indexer._enqueue_stale(self._app))
         return out
 
-    # ---------- 问答 ----------
-    def ask(self, question: str) -> dict:
-        question = (question or "").strip()
-        if not question:
-            return {"error": "请输入问题"}
+    # ---------- 任务：问答 / 总结 / 深度分析 / 信息提取 ----------
+    # 都在问答线程里一个接一个执行，过程推送 sources（找到的资料）/ progress / token / done / stopped / error
+    def _start(self, prefix: str, work) -> dict:
         if self._busy.is_set():
-            return {"error": "上一个问题还在回答中"}
+            return {"error": "上一个任务还在进行中，请稍等或先停止"}
         self._busy.set()
         self._cancel.clear()
-        qid = f"q{int(time.time() * 1000)}"
-        self._qa.submit(self._run_ask, qid, question)
+        qid = f"{prefix}{int(time.time() * 1000)}"
+        self._qa.submit(self._run_job, qid, work)
         return {"qid": qid}
 
-    def _run_ask(self, qid: str, question: str) -> None:
+    def _run_job(self, qid: str, work) -> None:
         t0 = time.perf_counter()
-        sources: list[RetrievedChunk] = []
 
         def on_context(ctx) -> None:
-            sources[:] = ctx
             dbg = self._app.retriever.last_debug
-            ms = int((time.perf_counter() - t0) * 1000)
-            log.info("检索 %d ms：问题语言 %s、模式 %s、策略 %s，送入 %d 个片段", ms, dbg.lang if dbg else "?",
-                     dbg.mode if dbg else "?", dbg.strategy if dbg else "?", len(ctx))
+            log.info("检索 %d ms：送入 %d 个片段（问题语言 %s、策略 %s）", int((time.perf_counter() - t0) * 1000),
+                     len(ctx), dbg.lang if dbg else "-", dbg.strategy if dbg else "-")
             if dbg:
                 log.debug("关键词查询：%s；向量候选 %d、关键词候选 %d", dbg.fts_query or "（无）",
                           len(dbg.vec_ids), len(dbg.fts_ids))
@@ -330,42 +327,149 @@ class Bridge:
             self._emit({"type": "sources", "qid": qid, "ms": int((time.perf_counter() - t0) * 1000),
                         "sources": [chunk_dict(i, c) for i, c in enumerate(ctx, start=1)]})
 
+        def on_progress(stage: str, done: int, total: int) -> None:
+            log.debug("进度：%s %d/%d", stage, done, total)
+            self._emit({"type": "progress", "qid": qid, "stage": stage, "done": done, "total": total})
+
         def on_token(t: str) -> None:
             if self._cancel.is_set():
                 raise Cancelled("已停止生成")
             self._emit({"type": "token", "qid": qid, "text": t})
 
+        cb = {"on_context": on_context, "on_progress": on_progress, "on_token": on_token,
+              "cancelled": self._cancel.is_set}
         try:
-            log.info("提问：%s", question)
-            ans: Answer = self._app.qa.ask(question, on_token=on_token, on_context=on_context)
-            record = self._save(question, ans)
+            record = work(cb, t0)
+            self._emit({"type": "done", "qid": qid, "record": record})
+        except Cancelled:
+            log.info("已停止")
+            self._emit({"type": "stopped", "qid": qid})
+        except LkosError as e:
+            log.error("出错：%s", e)
+            self._emit({"type": "error", "qid": qid, "message": str(e)})
+        except Exception as e:  # noqa: BLE001 - 不让后台线程静默死掉
+            log.exception("出错")
+            self._emit({"type": "error", "qid": qid, "message": f"出错了：{e}"})
+        finally:
+            self._busy.clear()
+
+    def ask(self, question: str, scope: dict | None = None, follow_up: int | None = None) -> dict:
+        """scope：{"source_ids", "file_types", "since", "path", "tags"}；follow_up：上一轮问答记录的 id（追问）。"""
+        question = (question or "").strip()
+        if not question:
+            return {"error": "请输入问题"}
+
+        def work(cb, t0):
+            history = []
+            if follow_up:
+                prev = self._app.repo.get_history(int(follow_up))
+                if prev:
+                    history = [(prev["question"], prev["answer"])]
+            log.info("提问：%s%s%s", question, f"（追问 #{follow_up}）" if history else "",
+                     f"，范围 {scope}" if scope else "")
+            ans = self._app.qa.ask(question, on_token=cb["on_token"], on_context=cb["on_context"],
+                                   scope=Scope.from_dict(scope), history=history or None)
+            record = self._save(question, ans, extra={"scope": scope or {}, "follow_up": follow_up if history else None})
             log.info("回答完成：首字 %s ms、共 %s ms、输入 %s / 输出 %s tokens、有效出处 %s、无效编号 %s%s",
                      ans.ttft_ms, ans.latency_ms, ans.input_tokens, ans.output_tokens, record["cited"] or "无",
                      ans.invalid_refs or "无", "，判定为没找到" if record["not_found"] else "")
             if record["not_found"]:
                 log.warning("没找到答案：%s → %s", question, ans.text[:80])
-            self._emit({"type": "done", "qid": qid, "record": record})
-        except Cancelled:
-            log.info("已停止生成")
-            self._emit({"type": "stopped", "qid": qid})
-        except LkosError as e:
-            log.error("问答出错：%s", e)
-            self._emit({"type": "error", "qid": qid, "message": str(e)})
-        except Exception as e:  # noqa: BLE001 - 不让后台线程静默死掉
-            log.exception("问答出错")
-            self._emit({"type": "error", "qid": qid, "message": f"出错了：{e}"})
-        finally:
-            self._busy.clear()
+            return record
+        return self._start("q", work)
 
-    def _save(self, question: str, ans: Answer) -> dict:
-        cited = sorted({c.ref for c in ans.citations})
+    def summarize(self, path: str) -> dict:
+        """总结整份文件（分段提炼 + 汇总）。"""
+        path = str(path or "")
+        if not self._call(lambda: self._app.repo.get_file(path)):
+            return {"error": "这个文件还没有索引"}
+        question = f"总结：《{Path(path).name}》"
+
+        def work(cb, t0):
+            log.info("开始总结：%s", path)
+            ans = self._app.summarizer.summarize_file(path, **cb)
+            ans.latency_ms = int((time.perf_counter() - t0) * 1000)
+            record = self._save(question, ans, kind="summary", extra={"path": path})
+            log.info("总结完成：共 %.0f 秒，出处 %s", ans.latency_ms / 1000, record["cited"] or "无")
+            return record
+        out = self._start("s", work)
+        return {**out, "question": question} if "qid" in out else out
+
+    def analyze(self, question: str, scope: dict | None = None) -> dict:
+        """深度分析：拆成几个方面分别检索，再按方面分析、综合结论。"""
+        question = (question or "").strip()
+        if not question:
+            return {"error": "请输入要分析的问题"}
+
+        def work(cb, t0):
+            log.info("深度分析：%s", question)
+            ans, aspects = self._app.analyzer.analyze(question, scope=Scope.from_dict(scope), **cb)
+            log.info("拆分的方面：%s", "；".join(aspects))
+            ans.latency_ms = int((time.perf_counter() - t0) * 1000)
+            return self._save(f"分析：{question}", ans, kind="analysis",
+                              extra={"aspects": aspects, "scope": scope or {}, "query": question})
+        return self._start("a", work)
+
+    def extract(self, request: str, path: str | None = None, scope: dict | None = None) -> dict:
+        """信息提取：按字段整理成表格（整个资料库或单个文件），每行带出处。"""
+        request = (request or "").strip()
+        if not request:
+            return {"error": "请写清楚要提取什么，例如“列出各项目的名称、预算和负责人”"}
+
+        def work(cb, t0):
+            log.info("信息提取：%s%s", request, f"（文件 {path}）" if path else "")
+            ctx_cb = cb["on_context"]
+            res = self._app.extractor.extract(request, path=path or None, on_progress=lambda d, t: cb["on_progress"]("extract", d, t),
+                                              on_context=ctx_cb, cancelled=cb["cancelled"])
+            res.latency_ms = int((time.perf_counter() - t0) * 1000)
+            log.info("提取完成：%d 列 %d 行，%d 批，共 %.0f 秒", len(res.columns), len(res.rows), res.batches,
+                     res.latency_ms / 1000)
+            ans = Answer(text=to_markdown(res.columns, res.rows), context=res.context, no_context=not res.context,
+                         latency_ms=res.latency_ms)
+            cited = sorted({n for r in res.rows for n in r["refs"]})
+            label = f"提取：{request}" + (f"（《{Path(path).name}》）" if path else "")
+            return self._save(label, ans, kind="extract", cited=cited,
+                              extra={"columns": res.columns, "rows": res.rows, "path": path, "request": request})
+        return self._start("e", work)
+
+    def export_csv(self, history_id: int, path: str | None = None) -> dict:
+        """把提取结果存成 CSV（带 BOM，Excel 直接打开）。不给 path 时弹出“存储为”对话框。"""
+        rec = self.open_history(int(history_id))
+        if not rec or rec.get("kind") != "extract":
+            return {"error": "这条记录不是信息提取的结果"}
+        if path is None:
+            if self._window is None:
+                return {"error": "窗口还没准备好"}
+            try:
+                import webview
+                kind = webview.FileDialog.SAVE if hasattr(webview, "FileDialog") else webview.SAVE_DIALOG
+            except ImportError:
+                kind = "save"
+            stem = re.sub(r"[\\/:*?\"<>|\s]+", "_", rec["extra"].get("request", "提取结果"))[:40] or "提取结果"
+            picked = self._window.create_file_dialog(kind, save_filename=f"{stem}.csv")
+            if not picked:
+                return {"cancelled": True}
+            path = picked[0] if isinstance(picked, (list, tuple)) else picked
+        text = to_csv(rec["extra"]["columns"], rec["extra"]["rows"], rec["context"])
+        Path(path).write_text(text, encoding="utf-8")
+        log.info("已导出 CSV：%s", path)
+        return {"ok": True, "path": str(path)}
+
+    def _save(self, question: str, ans: Answer, kind: str = "qa", extra: dict | None = None,
+              cited: list[int] | None = None) -> dict:
+        if cited is None:
+            cited = sorted({c.ref for c in ans.citations})
         ctx = [chunk_dict(i, c, set(cited)) for i, c in enumerate(ans.context, start=1)]
         # 只有“没有标注任何出处、且整段回答就是一句没找到”才算没找到；
         # 回答了一部分、另一部分说“资料中没有提到”的，照常显示回答
-        not_found = bool(ans.no_context) or (not cited and is_not_found(ans.text) and len(ans.text) <= 60)
+        if kind == "extract":
+            not_found = not (extra or {}).get("rows")
+        else:
+            not_found = bool(ans.no_context) or (not cited and is_not_found(ans.text) and len(ans.text) <= 60)
         model = self._app.cfg.tasks["knowledge_qa"].default_model
         hid = self._app.repo.add_history(question, ans.text, not_found, json.dumps(ctx, ensure_ascii=False),
-                                         json.dumps(cited), model, ans.ttft_ms, ans.latency_ms)
+                                         json.dumps(cited), model, ans.ttft_ms, ans.latency_ms, kind=kind,
+                                         extra_json=json.dumps(extra or {}, ensure_ascii=False))
         return self._record(self._app.repo.get_history(hid))
 
     @staticmethod
@@ -375,59 +479,8 @@ class Bridge:
         return {"id": row["id"], "question": row["question"], "answer": row["answer"],
                 "not_found": bool(row["not_found"]), "context": json.loads(row["context_json"]),
                 "cited": json.loads(row["cited_json"]), "model": row["model"], "ttft_ms": row["ttft_ms"],
-                "latency_ms": row["latency_ms"], "asked_at": row["asked_at"]}
-
-    def summarize(self, path: str) -> dict:
-        """总结整份文件（分段提炼 + 汇总），过程与提问一样推送 sources / progress / token / done。"""
-        path = str(path or "")
-        if self._busy.is_set():
-            return {"error": "上一个任务还在进行中"}
-        if not self._call(lambda: self._app.repo.get_file(path)):
-            return {"error": "这个文件还没有索引"}
-        self._busy.set()
-        self._cancel.clear()
-        qid = f"s{int(time.time() * 1000)}"
-        self._qa.submit(self._run_summary, qid, path)
-        return {"qid": qid, "question": f"总结：《{Path(path).name}》"}
-
-    def _run_summary(self, qid: str, path: str) -> None:
-        name = Path(path).name
-        question = f"总结：《{name}》"
-        t0 = time.perf_counter()
-
-        def on_context(ctx) -> None:
-            log.info("总结《%s》：分成 %d 个部分", name, len(ctx))
-            self._emit({"type": "sources", "qid": qid, "ms": int((time.perf_counter() - t0) * 1000),
-                        "sources": [chunk_dict(i, c) for i, c in enumerate(ctx, start=1)]})
-
-        def on_progress(stage: str, done: int, total: int) -> None:
-            log.debug("总结进度：%s %d/%d", stage, done, total)
-            self._emit({"type": "progress", "qid": qid, "stage": stage, "done": done, "total": total})
-
-        def on_token(t: str) -> None:
-            if self._cancel.is_set():
-                raise Cancelled("已停止生成")
-            self._emit({"type": "token", "qid": qid, "text": t})
-
-        try:
-            log.info("开始总结：%s", path)
-            ans = self._app.summarizer.summarize_file(path, on_progress=on_progress, on_token=on_token,
-                                                      on_context=on_context, cancelled=self._cancel.is_set)
-            ans.latency_ms = int((time.perf_counter() - t0) * 1000)
-            record = self._save(question, ans)
-            log.info("总结完成《%s》：共 %.0f 秒，出处 %s", name, ans.latency_ms / 1000, record["cited"] or "无")
-            self._emit({"type": "done", "qid": qid, "record": record})
-        except Cancelled:
-            log.info("已停止总结")
-            self._emit({"type": "stopped", "qid": qid})
-        except LkosError as e:
-            log.error("总结出错：%s", e)
-            self._emit({"type": "error", "qid": qid, "message": str(e)})
-        except Exception as e:  # noqa: BLE001
-            log.exception("总结出错")
-            self._emit({"type": "error", "qid": qid, "message": f"出错了：{e}"})
-        finally:
-            self._busy.clear()
+                "latency_ms": row["latency_ms"], "asked_at": row["asked_at"], "kind": row.get("kind") or "qa",
+                "extra": json.loads(row.get("extra_json") or "{}")}
 
     def stop(self) -> dict:
         self._cancel.set()

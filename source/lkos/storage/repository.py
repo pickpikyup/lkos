@@ -93,17 +93,18 @@ class Repository:
 
     # ---------- 问答记录 ----------
     def add_history(self, question: str, answer: str, not_found: bool, context_json: str, cited_json: str,
-                    model: str | None, ttft_ms: int | None, latency_ms: int | None) -> int:
+                    model: str | None, ttft_ms: int | None, latency_ms: int | None,
+                    kind: str = "qa", extra_json: str = "{}") -> int:
         cur = self.conn.execute(
             """INSERT INTO qa_history(owner_id, asked_at, question, answer, not_found, context_json, cited_json,
-                                      model, ttft_ms, latency_ms) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                                      model, ttft_ms, latency_ms, kind, extra_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (self.owner_id, now_iso(), question, answer, int(not_found), context_json, cited_json, model,
-             ttft_ms, latency_ms))
+             ttft_ms, latency_ms, kind, extra_json))
         return int(cur.lastrowid)
 
     def list_history(self, limit: int = 200) -> list[dict]:
         rows = self.conn.execute(
-            "SELECT id, asked_at, question, not_found FROM qa_history ORDER BY id DESC LIMIT ?", (limit,))
+            "SELECT id, asked_at, question, not_found, kind FROM qa_history ORDER BY id DESC LIMIT ?", (limit,))
         return [dict(r) for r in rows]
 
     def get_history(self, history_id: int) -> dict | None:
@@ -292,14 +293,51 @@ class Repository:
         ranked = sorted(((int(r["id"]), float(r["d"])) for r in rows), key=lambda x: (x[1], x[0]))
         return ranked[:int(k)]
 
-    def fts_search(self, match_query: str, k: int, lang: str | None = None) -> list[tuple[int, float]]:
+    @staticmethod
+    def _scope_sql(scope) -> tuple[str, list]:
+        """范围条件（作用在别名为 fl 的 files 表上）。"""
+        if scope is None or scope.empty:
+            return "", []
+        conds, params = [], []
+        if scope.path:
+            conds.append("fl.path = ?")
+            params.append(scope.path)
+        if scope.source_ids:
+            conds.append(f"fl.source_id IN ({','.join('?' * len(scope.source_ids))})")
+            params += list(scope.source_ids)
+        if scope.file_types:
+            conds.append(f"fl.file_type IN ({','.join('?' * len(scope.file_types))})")
+            params += list(scope.file_types)
+        if scope.since:
+            conds.append("fl.mtime >= ?")
+            params.append(float(scope.since))
+        if scope.tags:
+            conds.append(f"fl.id IN (SELECT file_id FROM file_tags WHERE tag IN ({','.join('?' * len(scope.tags))}))")
+            params += list(scope.tags)
+        return " AND " + " AND ".join(conds), params
+
+    def knn_scoped(self, vector: Sequence[float], k: int, scope, lang: str | None = None) -> list[tuple[int, float]]:
+        """限定范围时的向量检索：直接对范围内的文本块做 int8 余弦（范围通常远小于全库）。"""
+        where, params = self._scope_sql(scope)
+        sql = (f"SELECT c.id AS id, vec_distance_cosine(vec_int8(v.emb), vec_int8(?)) AS d FROM chunks c "
+               f"JOIN files fl ON fl.id = c.file_id JOIN vectors v ON v.hash = c.text_hash WHERE 1 = 1{where}")
+        args: list = [to_int8(vector), *params]
+        if lang:
+            sql += " AND c.lang = ?"
+            args.append(lang)
+        sql += " ORDER BY d, c.id LIMIT ?"
+        args.append(int(k))
+        return [(int(r["id"]), float(r["d"])) for r in self.conn.execute(sql, args)]
+
+    def fts_search(self, match_query: str, k: int, lang: str | None = None, scope=None) -> list[tuple[int, float]]:
         if not match_query.strip():
             return []
+        where, sparams = self._scope_sql(scope)
         sql = (
             "SELECT f.rowid AS id, bm25(chunks_fts) AS score FROM chunks_fts f "
-            "JOIN chunks c ON c.id = f.rowid WHERE chunks_fts MATCH ?"
+            "JOIN chunks c ON c.id = f.rowid JOIN files fl ON fl.id = c.file_id WHERE chunks_fts MATCH ?" + where
         )
-        params: list = [match_query]
+        params: list = [match_query, *sparams]
         if lang:
             sql += " AND c.lang = ?"
             params.append(lang)
