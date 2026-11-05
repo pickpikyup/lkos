@@ -20,6 +20,9 @@ app = typer.Typer(add_completion=False, no_args_is_help=False,
                   help="Local Knowledge OS：本地知识库索引、检索与问答。不带参数运行进入交互式问答。")
 source_app = typer.Typer(add_completion=False, no_args_is_help=True, help="管理要检索的文件夹。")
 app.add_typer(source_app, name="source")
+daemon_app = typer.Typer(add_completion=False, no_args_is_help=True,
+                         help="后台服务：关掉窗口后继续按周期更新索引（macOS，登录后自动运行）。")
+app.add_typer(daemon_app, name="daemon")
 console = Console()
 err = Console(stderr=True)
 
@@ -161,6 +164,67 @@ def source_set(number: int = typer.Argument(..., min=1, help="编号（见 lkos 
     console.print(f"  扫描件文字识别：{'开' if s['ocr'] else '关'}")
 
 
+@daemon_app.command("run")
+def daemon_run(once: bool = typer.Option(False, "--once", help="只检查并更新一轮就退出")):
+    """在前台运行后台服务（launchd 调用的就是它）。"""
+    from lkos.daemon import run_daemon
+
+    try:
+        n = run_daemon(home=state.home, config_path=state.config, once=once)
+    except LkosError as e:
+        fail(e)
+    if once:
+        console.print(f"本轮更新了 {n} 个文件夹。")
+
+
+@daemon_app.command("install")
+def daemon_install():
+    """安装并启动后台服务（写入 ~/Library/LaunchAgents/com.lkos.indexer.plist）。"""
+    from lkos import daemon
+
+    try:
+        a = open_app()
+        home = a.home
+        a.close()
+        path = daemon.install(home)
+    except LkosError as e:
+        fail(e)
+    console.print(f"已安装后台服务：{path}\n关掉窗口后会在接通电源、电脑空闲时按各文件夹的周期更新索引。")
+
+
+@daemon_app.command("uninstall")
+def daemon_uninstall():
+    """停止并卸载后台服务。"""
+    from lkos import daemon
+
+    console.print("已卸载后台服务。" if daemon.uninstall() else "后台服务没有安装。")
+
+
+@daemon_app.command("status")
+def daemon_status():
+    """查看后台服务是否安装、是否在运行、最近一次更新。"""
+    from lkos import daemon
+
+    try:
+        a = open_app()
+        home = a.home
+        a.close()
+    except LkosError as e:
+        fail(e)
+    st = daemon.status(home)
+    states = {"idle": "等待中", "running": "正在更新", "app-open": "应用已打开，由应用负责索引", "stopped": "没有运行"}
+    state_text = states.get(st["state"], st["state"] or "")
+    if (st["state"] or "").startswith("paused:"):
+        state_text = "已暂停（" + {"qa": "正在问答", "battery": "使用电池", "busy": "你在使用电脑"}.get(st["state"][7:], st["state"][7:]) + "）"
+    console.print(f"已安装：{'是' if st['installed'] else '否'}" + ("" if st["supported"] else "（只支持 macOS）"))
+    console.print(f"状态：{state_text}" + (f"：{st['folder']}" if st.get("folder") else ""))
+    last = st.get("last") or {}
+    if last:
+        console.print("最近一次：" + (f"{last.get('folder')} 出错：{last['error']}" if last.get("error") else
+                                   f"{last.get('folder')}：新索引 {last.get('indexed', 0)}、删除 {last.get('removed', 0)}"
+                                   f"（{(last.get('at') or '')[:16].replace('T', ' ')} UTC）"))
+
+
 @app.command()
 def update(when_idle: bool = typer.Option(False, "--when-idle", help="闲时索引：问答、用电池、使用电脑时暂停")):
     """更新所有已添加文件夹的索引（只处理新增、修改、删除的文件）。"""
@@ -273,9 +337,20 @@ def index(
 
 def run_index(a: App, folder: Path, limit: Optional[int] = None, when_idle: bool = False):
     """带进度条地索引一个文件夹，返回 (IndexReport, 闲时闸门或 None)。Ctrl-C 与错误交给调用方处理。"""
-    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+    from lkos.daemon import index_lock, wait_for_index_lock
 
     folder = Path(folder).expanduser().resolve()
+    lock = index_lock(a.home, "cli")
+    wait_for_index_lock(lock, on_wait=lambda: err.print("应用或后台服务正在索引，等它完成当前文件后继续…"))
+    try:
+        return _run_index_locked(a, folder, limit, when_idle)
+    finally:
+        lock.release()
+
+
+def _run_index_locked(a: App, folder: Path, limit: Optional[int], when_idle: bool):
+    from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeElapsedColumn
+
     total = sum(1 for _ in a.indexer.walk(folder))
     if limit:
         total = min(total, limit)

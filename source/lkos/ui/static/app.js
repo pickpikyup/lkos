@@ -141,7 +141,7 @@
 
   const REASON = {
     qa: "正在问答，答完自动继续", manual: "已手动暂停", busy: "你正在使用电脑，空闲后自动继续",
-    battery: "正在用电池，接通电源后继续",
+    battery: "正在用电池，接通电源后继续", daemon: "后台服务正在索引，等它做完当前文件",
   };
 
   function renderStatus() {
@@ -668,6 +668,7 @@
           同时记录更详细的调试信息。日志只保存在本机的 data/logs/，不记录文档全文。</div></div>
         <button type="button" class="switch" role="switch" aria-checked="${on}" aria-labelledby="dev-label" id="dev-switch"></button>
       </section>
+      <section class="setting" id="daemon-setting" hidden></section>
       <section class="setting"><div class="txt"><div class="h">运行信息</div>
         <div class="kv" style="margin-top:8px">${models}
           <span class="k">日志文件</span><span class="v">${esc(S.log.file || "data/logs/lkos.log")}</span></div>
@@ -679,6 +680,30 @@
       toast(S.settings.dev_mode ? "开发者模式已打开，左栏可以看日志" : "开发者模式已关闭");
     });
     $("settings-open-logs").addEventListener("click", openLogsFolder);
+    renderDaemon();
+  }
+
+  const DAEMON_STATE = { idle: "等待中，到时间会自动更新", running: "正在更新", "app-open": "应用开着，由应用负责索引", stopped: "没有运行" };
+  async function renderDaemon(busy) {
+    const el = $("daemon-setting");
+    if (!el) return;
+    let st;
+    try { st = await api("daemon_status"); } catch (e) { return; }
+    el.hidden = false;
+    let state = DAEMON_STATE[st.state] || st.state || "";
+    if ((st.state || "").startsWith("paused:")) state = "已暂停：" + (REASON[st.state.slice(7)] || st.state.slice(7));
+    const last = st.last ? (st.last.error ? `最近一次出错：${esc(st.last.error)}` : `最近一次：${esc(baseName(st.last.folder))} 新索引 ${fmt(st.last.indexed)} 个文件`) : "";
+    el.innerHTML = `<div class="txt"><div class="h" id="daemon-label">关掉窗口后继续索引</div>
+        <div class="d">${st.supported ? `安装一个后台服务（登录后自动运行），关掉窗口后仍按各文件夹的周期，在接通电源、电脑空闲时更新索引；打开应用时自动让给应用。
+          ${st.installed ? `<br>状态：${esc(state)}${st.folder ? "（" + esc(baseName(st.folder)) + "）" : ""}${last ? " · " + last : ""}` : ""}`
+          : "只支持 macOS（用系统的 launchd 在后台运行）。"}</div></div>
+      <button type="button" class="switch" role="switch" aria-checked="${!!st.installed}" aria-labelledby="daemon-label" id="daemon-switch"${st.supported && !busy ? "" : " disabled"}></button>`;
+    $("daemon-switch").addEventListener("click", async () => {
+      renderDaemon(true);
+      const r = await api("set_daemon", !st.installed);
+      if (r.error) toast(r.error); else toast(r.installed ? "后台服务已安装，关掉窗口后会继续索引" : "后台服务已卸载");
+      renderDaemon();
+    });
   }
 
   async function openLogsFolder() {

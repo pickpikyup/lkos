@@ -21,8 +21,11 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterator
+
+from lkos.storage.repository import REFRESH_DAYS
 
 # ---------------- 问答活动标记 ----------------
 
@@ -153,3 +156,19 @@ REASONS = {
     "busy": "检测到你在使用电脑，空闲后继续",
     "resume": "继续索引",
 }
+
+
+# ---------------- 到期的文件夹 ----------------
+def due_sources(sources: list[dict], now: datetime | None = None) -> list[dict]:
+    """到了自动更新时间的文件夹：按各自的周期（每天 / 每周 / 每月；“只手动”不自动更新）；
+    从没索引完的文件夹总是到期（下次空闲时接着做）。"""
+    now = now or datetime.now(timezone.utc)
+    out = []
+    for s in sources:
+        days = REFRESH_DAYS.get(s.get("refresh") or "weekly", 7)
+        if days is None and s.get("last_indexed"):
+            continue
+        cutoff = (now - timedelta(days=days or 7)).isoformat(timespec="seconds")
+        if (s.get("last_indexed") or "") < cutoff and Path(s["path"]).is_dir():
+            out.append(s)
+    return out

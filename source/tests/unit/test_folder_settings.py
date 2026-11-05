@@ -9,7 +9,8 @@ import pytest
 from lkos.app import App
 from lkos.gateway.fake import FakeProvider
 from lkos.indexing.indexer import is_excluded
-from lkos.ui.bridge import Bridge, due_sources
+from lkos.indexing.scheduler import due_sources
+from lkos.ui.bridge import Bridge
 from tests.conftest import TEST_DIM, fake_overrides
 from tests.samples import make_docx, make_pdf
 

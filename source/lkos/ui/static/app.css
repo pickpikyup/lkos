@@ -321,3 +321,4 @@ input.mini { width: 140px; }
 .fset .check { display: inline-flex; align-items: center; gap: 6px; }
 .fset textarea.mini { height: auto; }
 .fset-row.actions { justify-content: flex-end; }
+.switch:disabled { opacity: .5; cursor: not-allowed; }

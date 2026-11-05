@@ -19,7 +19,6 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -27,7 +26,9 @@ from lkos.app import App
 from lkos.errors import Cancelled, LkosError
 from lkos.evaluation.evaluate import is_not_found
 from lkos.parsers.ocr import available as ocr_available
-from lkos.storage.repository import REFRESH_DAYS
+from lkos.daemon import app_lock, index_lock, wait_for_index_lock
+from lkos import daemon as daemon_mod
+from lkos.indexing.scheduler import due_sources
 from lkos.qa.extract import to_csv, to_markdown
 from lkos.indexing.scheduler import GateConfig, IndexGate
 from lkos.logs import get_logger, set_level, setup_logging
@@ -39,7 +40,6 @@ LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
 SETTINGS_FILE = "ui-settings.json"
 DEFAULT_SETTINGS = {"dev_mode": False}
 
-AUTO_REFRESH_DAYS = 7          # 默认每周刷新
 AUTO_CHECK_SECONDS = 600       # 每 10 分钟看一次有没有到期的文件夹
 
 PROBLEM_HINTS = {
@@ -105,26 +105,13 @@ class _Gate:
             time.sleep(0.5)
 
 
-def due_sources(sources: list[dict], now: datetime | None = None) -> list[dict]:
-    """到了自动更新时间的文件夹：按各自的周期（每天 / 每周 / 每月；“只手动”不自动更新）；
-    从没索引完的文件夹总是到期（下次空闲时接着做）。"""
-    now = now or datetime.now(timezone.utc)
-    out = []
-    for s in sources:
-        days = REFRESH_DAYS.get(s.get("refresh") or "weekly", AUTO_REFRESH_DAYS)
-        if days is None and s.get("last_indexed"):
-            continue
-        cutoff = (now - timedelta(days=days or AUTO_REFRESH_DAYS)).isoformat(timespec="seconds")
-        if (s.get("last_indexed") or "") < cutoff and Path(s["path"]).is_dir():
-            out.append(s)
-    return out
-
-
 class IndexWorker:
     """后台索引线程：队列里的文件夹逐个索引，进度推给界面。"""
 
-    def __init__(self, open_app: Callable[[], App], emit: Callable[[dict], None], auto_refresh: bool = True):
+    def __init__(self, open_app: Callable[[], App], emit: Callable[[dict], None], auto_refresh: bool = True,
+                 home: Path | None = None):
         self._open_app = open_app
+        self._ilock = index_lock(home, "app") if home is not None else None
         self._emit = emit
         self._jobs: queue.Queue = queue.Queue()
         self._paused = threading.Event()
@@ -235,6 +222,13 @@ class IndexWorker:
             self._emit_state()
 
         try:
+            if self._ilock is not None:   # 关窗期间后台服务可能正在索引：等它在当前文件做完后让出
+                wait_for_index_lock(self._ilock, self._cancel.is_set,
+                                    on_wait=lambda: (ilog.info("后台服务正在索引，等它让出"),
+                                                     self._set(state="paused", reason="daemon")),
+                                    poll=0.5)
+                if self.state["state"] == "paused":
+                    self._set(state="running", reason=None)
             rep = app.indexer.index_folder(path, on_progress=on_progress, gate=_Gate(self, app, background))
             last = {"folder": folder, "indexed": rep.files_indexed, "failed": rep.files_failed,
                     "removed": rep.files_removed, "chunks": rep.chunks_added, "seconds": rep.seconds}
@@ -248,6 +242,9 @@ class IndexWorker:
         except LkosError as e:
             last = {"folder": folder, "error": str(e)}
             ilog.error("索引出错 %s：%s", folder, e)
+        finally:
+            if self._ilock is not None:
+                self._ilock.release()
         self._set(state="idle", reason=None, folder=None, done=0, total=0, file=None, last=last)
         self._emit({"type": "library_changed"})
 
@@ -270,7 +267,11 @@ class Bridge:
                  self._app.cfg.tasks["knowledge_qa"].default_model, self._app.cfg.retrieval.strategy)
         self._cancel = threading.Event()
         self._busy = threading.Event()
-        self._indexer = IndexWorker(lambda: App.open(**kw), self._emit, auto_refresh=auto_refresh)
+        # 应用打开期间持有 app.lock：后台服务看到后不再索引，由应用接手
+        self._applock = app_lock(self._app.home)
+        self._applock.acquire()
+        self._indexer = IndexWorker(lambda: App.open(**kw), self._emit, auto_refresh=auto_refresh,
+                                    home=self._app.home)
         self._sent: list[dict] = []   # 窗口还没准备好时（以及测试中）记下推送的事件
 
     # ---------- 内部 ----------
@@ -292,6 +293,7 @@ class Bridge:
         return self._qa.submit(fn).result()
 
     def _close(self) -> None:
+        self._applock.release()
         self._indexer.shutdown()
         self._cancel.set()
         self._qa.submit(self._app.close).result()
@@ -601,6 +603,20 @@ class Bridge:
             self._indexer.enqueue(after["path"])
         self._emit({"type": "library_changed"})
         return {**after, "reindex": reindex}
+
+    # ---------- 后台服务（关掉窗口后继续索引） ----------
+    def daemon_status(self) -> dict:
+        return daemon_mod.status(self._app.home)
+
+    def set_daemon(self, enabled: bool) -> dict:
+        try:
+            if enabled:
+                daemon_mod.install(self._app.home)
+            else:
+                daemon_mod.uninstall()
+        except LkosError as e:
+            return {"error": str(e)}
+        return daemon_mod.status(self._app.home)
 
     def update_source(self, path: str) -> dict:
         return {"ok": self._indexer.enqueue(str(path))}
