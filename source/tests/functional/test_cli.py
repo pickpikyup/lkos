@@ -110,7 +110,7 @@ def test_full_flow_index_search_ask_status(cli, corpus):
     out = cli("ask", "What is the retention policy for logs?", "--no-stream", "--strategy", "flat")
     assert "security-policy.md" in out and "Security Policy > Log retention" in out
     # doc_first：最佳片段补入了相邻块，引用位置变成合并后的标题与行号范围
-    out = cli("ask", "What is the retention policy for logs?", "--no-stream")
+    out = cli("ask", "What is the retention policy for logs?", "--no-stream", "--strategy", "doc_first")
     assert "security-policy.md · Security Policy · 行 " in out
 
     out = cli("status")
@@ -194,7 +194,7 @@ def test_eval_chunk_level_and_strategy(cli, corpus, tmp_path):
     ], allow_unicode=True), encoding="utf-8")
     out = cli("eval", str(q), "--strategy", "flat")
     assert "策略：flat" in out and "块级命中率：100%（1/1" in out
-    out = cli("eval", str(q), "--with-answer")
+    out = cli("eval", str(q), "--with-answer", "--strategy", "doc_first")
     assert "策略：doc_first" in out and "答案正确率：" in out and "文档对但答“没有找到”：0 题" in out
     assert "首 token 中位数" in out and "zh " in out
 

@@ -18,7 +18,7 @@ def test_defaults_match_design():
     assert cfg.privacy.offline_mode is True
     assert cfg.providers["hermes"].is_remote is True
     assert cfg.providers["local"].is_remote is False
-    assert cfg.indexing.extensions == [".pdf", ".docx", ".md"]
+    assert cfg.indexing.extensions == [".pdf", ".docx", ".doc", ".pptx", ".ppt", ".md"]
 
 
 def test_user_file_deep_merges_over_defaults(tmp_path):
@@ -38,7 +38,7 @@ def test_chunk_defaults_by_language_and_legacy_override():
     assert (cfg.indexing.chunk_chars_zh, cfg.indexing.chunk_chars_other) == (500, 1200)
     assert cfg.indexing.chunk_max_chars is None
     assert make_chunker(cfg.indexing).signature() == "other1200-zh500-ov0.15-d2"
-    assert cfg.retrieval.strategy == "doc_first" and cfg.retrieval.per_doc_max == 3
+    assert cfg.retrieval.strategy == "flat" and cfg.retrieval.per_doc_max == 3
     legacy = load_config(None, overrides={"indexing": {"chunk_max_chars": 800}})
     assert make_chunker(legacy.indexing).signature() == "all800-ov100c-d2"  # 旧写法：所有语言 800
 

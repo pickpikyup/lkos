@@ -125,7 +125,7 @@ def make_app(tmp_path, corpus):
 
 
 def test_doc_first_groups_by_document_and_records_ranking(make_app):
-    a = make_app()
+    a = make_app(strategy="doc_first")
     hits = a.retriever.search("项目二期的预算上限是多少？", k=4)
     dbg = a.retriever.last_debug
     assert dbg.strategy == "doc_first" and dbg.doc_rank
@@ -137,7 +137,7 @@ def test_doc_first_groups_by_document_and_records_ranking(make_app):
 
 
 def test_per_doc_max_one_gives_distinct_documents(make_app):
-    a = make_app(per_doc_max=1, merge_adjacent=False)
+    a = make_app(per_doc_max=1, merge_adjacent=False, strategy="doc_first")
     hits = a.retriever.search("预算 budget", k=3)
     assert len({h.file_id for h in hits}) == len(hits) == 3
 

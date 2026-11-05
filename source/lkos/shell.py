@@ -234,7 +234,7 @@ class Shell:
             return
         folder = folder.resolve()
         n = sum(1 for _ in self.a.indexer.walk(folder))
-        self.console.print(f"找到 {n} 个可索引的文件（PDF / Word / Markdown）。")
+        self.console.print(f"找到 {n} 个可索引的文件（PDF / Word / PowerPoint / Markdown）。")
         if n == 0:
             return
         self._index(folder)

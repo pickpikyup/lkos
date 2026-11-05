@@ -33,10 +33,12 @@ def clean_text(text: str) -> str:
 
 def _registry() -> list[Parser]:
     from lkos.parsers.docx import DocxParser
+    from lkos.parsers.legacy import DocParser, PptParser
     from lkos.parsers.markdown import MarkdownParser
     from lkos.parsers.pdf import PdfParser
+    from lkos.parsers.pptx import PptxParser
 
-    return [PdfParser(), DocxParser(), MarkdownParser()]
+    return [PdfParser(), DocxParser(), PptxParser(), MarkdownParser(), DocParser(), PptParser()]
 
 
 def parser_for(path: Path, allowed: list[str] | None = None) -> Parser | None:
@@ -53,7 +55,7 @@ def parse_file(parser: Parser, path: Path) -> list[Block]:
     """统一异常：未预期的异常包装为 ParseError，便于 Indexer 记录失败原因。"""
     try:
         return [b for b in parser.parse(path) if b.text.strip()]
-    except (EncryptedFileError, ParseError):
+    except (EncryptedFileError, ParseError):  # 含 UnsupportedFileError
         raise
     except Exception as e:  # noqa: BLE001 - 第三方解析库抛出的异常种类不可控
         raise ParseError(f"{type(e).__name__}: {e}") from e

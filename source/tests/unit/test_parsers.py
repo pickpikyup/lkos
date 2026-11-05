@@ -22,7 +22,7 @@ def test_parser_for_extension(name, ptype):
 
 def test_parser_for_unsupported_or_not_allowed():
     assert parser_for(Path("a.txt")) is None
-    assert parser_for(Path("a.doc")) is None
+    assert parser_for(Path("a.key")) is None
     assert parser_for(Path("a.pdf"), allowed=[".md"]) is None
 
 

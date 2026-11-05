@@ -263,7 +263,9 @@ def evaluate(questions: list[Question], retriever, qa=None, k: int = 5, lang: st
             res.ttft_ms = ans.ttft_ms
             res.answer = ans.text
             res.cited = [f"[{c.ref}] {c.chunk.describe()}" for c in ans.citations]
-            res.not_found = bool(ans.no_context) or is_not_found(ans.text)
+            # 与应用界面一致：没有任何有效出处、且整段回答就是一句“没找到”，才算没找到
+            res.not_found = bool(ans.no_context) or (not ans.citations and is_not_found(ans.text)
+                                                     and len(ans.text) <= 60)
             if q.expected_answer:
                 res.answer_correct = answer_correct(ans.text, q.expected_answer)
         report.results.append(res)

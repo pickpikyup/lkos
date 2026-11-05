@@ -125,3 +125,31 @@ def build_corpus(root: Path) -> Path:
     (root / "~$项目计划书.docx").write_bytes(b"lock file")
     (root / "notes.txt").write_text("unsupported extension", encoding="utf-8")
     return root
+
+
+def make_pptx(path: Path, slides: list[dict]) -> Path:
+    """slides: [{"title": ..., "body": [行, ...], "table": [[单元格, ...], ...], "notes": ...}]"""
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    prs = Presentation()
+    for s in slides:
+        slide = prs.slides.add_slide(prs.slide_layouts[1])   # 标题 + 内容
+        slide.shapes.title.text = s.get("title", "")
+        body = slide.placeholders[1].text_frame
+        lines = s.get("body", [])
+        if lines:
+            body.text = lines[0]
+            for line in lines[1:]:
+                body.add_paragraph().text = line
+        if s.get("table"):
+            rows = s["table"]
+            shape = slide.shapes.add_table(len(rows), len(rows[0]), Inches(1), Inches(5), Inches(6), Inches(1))
+            for r, row in enumerate(rows):
+                for c, val in enumerate(row):
+                    shape.table.cell(r, c).text = val
+        if s.get("notes"):
+            slide.notes_slide.notes_text_frame.text = s["notes"]
+    prs.save(str(path))
+    return path

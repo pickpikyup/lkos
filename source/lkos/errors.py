@@ -33,5 +33,9 @@ class SchemaVersionError(LkosError):
     """数据库是旧版本格式，需要重建索引。"""
 
 
+class UnsupportedFileError(ParseError):
+    """格式暂不支持（旧版 .ppt，非 macOS 上的 .doc）：记为“跳过”并提示处理办法，不算失败。"""
+
+
 class Cancelled(LkosError):
     """用户中途停止（停止生成、停止索引）。"""

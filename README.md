@@ -1,7 +1,7 @@
 # Local Knowledge OS
 
-本地离线知识库：把你的 PDF、Word（.docx）、Markdown 建成索引，用本机的 Qwen3 4B 回答问题，
-每个回答都标出处（文件名 + 页码 / 标题 / 行号），点一下就能核对原文。文档内容不会离开这台电脑。
+本地离线知识库：把你的 PDF、Word（.docx / .doc）、PowerPoint（.pptx）、Markdown 建成索引，用本机的 Qwen3 4B 回答问题，
+每个回答都标出处（文件名 + 页码 / 幻灯片 / 标题 / 行号），点一下就能核对原文。文档内容不会离开这台电脑。
 
 ## 使用
 
@@ -48,4 +48,6 @@ source/scripts/test.sh --live   # 加上真实模型测试
 
 测试的临时文件在 `.pytest_tmp/`（不进 Git），可以随时删除。配置项与实现取舍见 `design/implementation-notes.md`。
 
-**目前的限制**：扫描件（没有文字层的 PDF）、加密文件、旧版 .doc / .ppt 会被跳过，资料库页会列出这些文件和处理办法；不做 OCR；不做多轮对话记忆；远端模型只保留接口、默认关闭。
+**目前的限制**：扫描件（没有文字层的 PDF）、加密文件、旧版 .ppt 会被跳过，资料库页会列出这些文件和处理办法（旧版 .doc 用 macOS 自带工具自动转换）；不做 OCR；不做多轮对话记忆；远端模型只保留接口、默认关闭。
+
+**评测**：双击 `source/scripts/run_eval.command`，用 `data/eval/` 里的题目评测当前版本并和上次对比（约 15–20 分钟）。

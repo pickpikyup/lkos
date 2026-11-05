@@ -41,6 +41,7 @@ AUTO_CHECK_SECONDS = 600       # 每 10 分钟看一次有没有到期的文件�
 PROBLEM_HINTS = {
     "encrypted": "文件有密码，无法读取",
     "no extractable text": "没有文字层（可能是扫描件），以后开启 OCR 后可以检索",
+    "unsupported": None,   # 用错误信息本身（已写明处理办法）
 }
 
 
@@ -408,7 +409,9 @@ class Bridge:
             problems = []
             for f in self._app.repo.failed_files():
                 err = f.error or ""
-                hint = next((v for k, v in PROBLEM_HINTS.items() if err.startswith(k)), None)
+                hint = next((v for k, v in PROBLEM_HINTS.items() if err.startswith(k) and v), None)
+                if hint is None and err.startswith("unsupported: "):
+                    hint = err.removeprefix("unsupported: ")
                 problems.append({"path": f.path, "file": Path(f.path).name, "status": f.status,
                                  "hint": hint or (f"无法读取：{err}" if f.status == "failed" else err)})
             s = self._app.repo.stats()
@@ -439,7 +442,7 @@ class Bridge:
         folder = folder.resolve()
         n = self._call(lambda: sum(1 for _ in self._app.indexer.walk(folder)))
         if n == 0:
-            return {"error": "这个文件夹里没有可以索引的文件（PDF、Word .docx、Markdown）"}
+            return {"error": "这个文件夹里没有可以索引的文件（PDF、Word、PowerPoint .pptx、Markdown）"}
         self._call(lambda: self._app.repo.upsert_source(str(folder)))
         self._indexer.enqueue(str(folder))
         self._emit({"type": "library_changed"})

@@ -68,11 +68,13 @@ class TaskConfig:
 
 
 STRATEGIES = ("doc_first", "flat")
+# .ppt 也在列表里：不能解析，但会出现在资料库的“需要处理的文件”里，提示另存为 .pptx
+DEFAULT_EXTENSIONS = (".pdf", ".docx", ".doc", ".pptx", ".ppt", ".md")
 
 
 @dataclass
 class IndexingConfig:
-    extensions: list[str] = field(default_factory=lambda: [".pdf", ".docx", ".md"])
+    extensions: list[str] = field(default_factory=lambda: list(DEFAULT_EXTENSIONS))
     max_file_size_mb: float = 100
     chunk_chars_zh: int = 500            # 中文为主的段落：每块约 500 字
     chunk_chars_other: int = 1200        # 英文、法文等：每块约 1,200 字符（token 数与中文 500 字接近）
@@ -94,7 +96,7 @@ class RetrievalConfig:
     language_filter: str = "soft"   # soft | strict | all（auto 为旧写法，等同 strict）
     same_lang_boost: float = 1.2    # soft 模式下同语言文本块的融合分数倍率
     vector_candidates: int = 200    # 二值粗筛取多少候选再做 int8 精排
-    strategy: str = "doc_first"     # doc_first：先选文档再选段落（M1）| flat：直接取融合分最高的块（v0.2）
+    strategy: str = "flat"          # flat：直接取融合分最高的块 | doc_first：先选文档再选段落（M1 实测略差，保留作对照）
     doc_score_top: int = 3          # 文档得分 = 该文档最好的几个块的分数之和
     per_doc_max: int = 3            # 同一文档最多送几个片段
     merge_adjacent: bool = True     # 同一文件相邻的片段合并为一个
@@ -198,7 +200,7 @@ def parse_config(raw: dict) -> Config:
 
         idx = raw.get("indexing") or {}
         indexing = IndexingConfig(
-            extensions=[e.lower() if e.startswith(".") else "." + e.lower() for e in idx.get("extensions", [".pdf", ".docx", ".md"])],
+            extensions=[e.lower() if e.startswith(".") else "." + e.lower() for e in idx.get("extensions", DEFAULT_EXTENSIONS)],
             max_file_size_mb=float(idx.get("max_file_size_mb", 100)),
             chunk_chars_zh=int(idx.get("chunk_chars_zh", 500)),
             chunk_chars_other=int(idx.get("chunk_chars_other", 1200)),
@@ -219,7 +221,7 @@ def parse_config(raw: dict) -> Config:
             language_filter=str(ret.get("language_filter", "soft")),
             same_lang_boost=float(ret.get("same_lang_boost", 1.2)),
             vector_candidates=int(ret.get("vector_candidates", 200)),
-            strategy=str(ret.get("strategy", "doc_first")),
+            strategy=str(ret.get("strategy", "flat")),
             doc_score_top=int(ret.get("doc_score_top", 3)),
             per_doc_max=int(ret.get("per_doc_max", 3)),
             merge_adjacent=bool(ret.get("merge_adjacent", True)),

@@ -192,7 +192,7 @@
       const st = S.stats || { files: 0, chunks: 0 };
       if (!S.sources.length) {
         h += `<div class="welcome"><h1>先添加资料文件夹</h1>
-          <p>选一个放着 PDF、Word（.docx）或 Markdown 的文件夹，建好索引后就可以直接提问。文档内容不会离开这台电脑。</p>
+          <p>选一个放着 PDF、Word、PowerPoint（.pptx）或 Markdown 的文件夹，建好索引后就可以直接提问。文档内容不会离开这台电脑。</p>
           <button type="button" class="btn primary" data-action="add">添加文件夹</button></div>`;
       } else {
         h += `<div class="welcome"><h1>问你的资料</h1>
@@ -573,7 +573,7 @@
       <span class="grow"></span>
       ${lib.sources.length ? '<button type="button" class="btn" data-action="update-all">全部立即更新</button>' : ""}
       <button type="button" class="btn primary" data-action="add">添加文件夹</button></div>
-      <div class="drop" id="drop">把文件夹拖到这里添加 · 支持 PDF、Word（.docx）、Markdown</div>`;
+      <div class="drop" id="drop">把文件夹拖到这里添加 · 支持 PDF、Word、PowerPoint（.pptx）、Markdown</div>`;
     if (!lib.sources.length) h += '<p class="sub">还没有添加文件夹。</p>';
     for (const s of lib.sources) {
       const name = s.path.split("/").filter(Boolean).pop() || s.path;

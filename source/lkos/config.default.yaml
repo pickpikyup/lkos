@@ -33,7 +33,7 @@ tasks:
     max_tokens: 512                # 实测回答多在 50 tokens 以内；留足 4K 上下文给 4 个片段
 
 indexing:
-  extensions: [.pdf, .docx, .md]
+  extensions: [.pdf, .docx, .doc, .pptx, .ppt, .md]   # .doc 在 macOS 上自动转换；.ppt 只提示另存为 .pptx
   max_file_size_mb: 100
   # 按语言切块：中文约 500 字、英文 / 法文约 1,200 字符，重叠 15%（两种语言的片段 token 数接近）
   # 修改后各来源会自动重新切块（向量按文本缓存，未改动的文本不重算）
@@ -54,7 +54,8 @@ retrieval:
   language_filter: soft         # soft：同语言加权但不排除 | strict：只检索同语言 | all：不区分
   same_lang_boost: 1.2
   vector_candidates: 200        # 二值粗筛候选数，越大召回越好、越慢
-  strategy: doc_first           # doc_first：先选文档再选段落 | flat：直接取分数最高的块（v0.2）
+  strategy: flat                # flat：直接取分数最高的块 | doc_first：先选文档再选段落
+                                # 2026-11-03 实测（61 题）：flat 块级命中 85%，doc_first 82%，默认用 flat
   doc_score_top: 3              # 文档得分 = 该文档最好的 3 个块的分数之和
   per_doc_max: 3                # 同一文档最多送 3 个片段
   merge_adjacent: true          # 同一文件相邻的片段合并

@@ -112,26 +112,26 @@ class Retriever:
         debug = SearchDebug(qlang, mode, lang_filter, fts_query, vec_ids, fts_ids, list(boost), strategy)
         self.last_debug = debug
 
-        if strategy == "flat":
-            ranked = sorted(((cid, s * boost.get(cid, 1.0)) for cid, s in fused), key=lambda x: -x[1])[:k]
-            chunks = self.repo.load_chunks([cid for cid, _ in ranked])
-            scores = dict(ranked)
-            for c in chunks:
-                c.score = round(scores[c.chunk_id], 6)
-            return chunks
-
-        file_of = self.repo.files_of_chunks([cid for cid, _ in fused])
-        doc_rank = rank_documents(fused, file_of, boost, top=r.doc_score_top)
-        debug.doc_rank = doc_rank
         scores = dict(fused)
         pool = {c.chunk_id: c for c in self.repo.load_chunks([cid for cid, _ in fused])}
-        for c in pool.values():
-            c.score = round(scores[c.chunk_id], 6)
         # 只有标题、页眉的极短片段（封面页“××课程”之类）几乎不含答案却常因关键词命中排在前面：
         # 候选足够时不让它们占名额
         substantial = [(cid, sc) for cid, sc in fused if cid in pool and len(pool[cid].text.strip()) >= MIN_CHUNK_CHARS]
         if len(substantial) >= k:
             fused = substantial
+
+        if strategy == "flat":
+            ranked = sorted(((cid, s * boost.get(cid, 1.0)) for cid, s in fused), key=lambda x: -x[1])[:k]
+            chunks = [pool[cid] for cid, _ in ranked if cid in pool]
+            for c, (_, sc) in zip(chunks, ranked):
+                c.score = round(sc, 6)
+            return chunks
+
+        file_of = self.repo.files_of_chunks([cid for cid, _ in fused])
+        doc_rank = rank_documents(fused, file_of, boost, top=r.doc_score_top)
+        debug.doc_rank = doc_rank
+        for c in pool.values():
+            c.score = round(scores[c.chunk_id], 6)
         want = k
         while True:
             picked = select_chunks(fused, file_of, doc_rank, want, r.per_doc_max)

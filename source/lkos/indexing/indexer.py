@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from lkos.config import Config, make_chunker
-from lkos.errors import EncryptedFileError, ParseError
+from lkos.errors import EncryptedFileError, ParseError, UnsupportedFileError
 from lkos.indexing.chunker import Chunker
 from lkos.indexing.tokenize import to_fts_tokens
 from lkos.parsers import parse_file, parser_for
@@ -196,6 +196,10 @@ class Indexer:
             blocks = parse_file(parser, p)
         except EncryptedFileError as e:
             self.repo.mark_skipped(source_id, info, f"encrypted: {e}")
+            run.files_skipped += 1
+            return "skipped", str(e)
+        except UnsupportedFileError as e:   # 旧版 .ppt 等：跳过并提示处理办法，不算失败
+            self.repo.mark_skipped(source_id, info, f"unsupported: {e}")
             run.files_skipped += 1
             return "skipped", str(e)
         except ParseError as e:

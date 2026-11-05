@@ -18,6 +18,9 @@ class Location:
     def describe(self, file_type: str) -> str:
         """按格式输出引用定位文字（需求文档第 7 节的粒度）。"""
         parts: list[str] = []
+        if file_type == "pptx" and self.page is not None:
+            parts.append(f"幻灯片 {self.page}" if self.page_end in (None, self.page)
+                         else f"幻灯片 {self.page}–{self.page_end}")
         if file_type == "pdf" and self.page is not None:
             if self.page_end is not None and self.page_end != self.page:
                 parts.append(f"第 {self.page}–{self.page_end} 页")
@@ -25,7 +28,7 @@ class Location:
                 parts.append(f"第 {self.page} 页")
         if self.heading_path:
             parts.append(self.heading_path)
-        if file_type == "docx" and self.para_start is not None:
+        if file_type in ("docx", "doc") and self.para_start is not None:
             parts.append(_range("段落", self.para_start, self.para_end))
         if file_type == "md" and self.line_start is not None:
             parts.append(_range("行", self.line_start, self.line_end))
