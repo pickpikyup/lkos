@@ -56,6 +56,7 @@
         <textarea id="q" rows="2" placeholder="问一个关于你资料的问题，⌘↩ 发送"></textarea>
         <div class="row">
           <div class="seg" role="group" aria-label="模式">
+            <button type="button" data-mode="chat" aria-pressed="false">对话</button>
             <button type="button" data-mode="search" aria-pressed="false">关键词检索</button>
             <button type="button" data-mode="qa" aria-pressed="true">分析</button>
             <button type="button" data-mode="analysis" aria-pressed="false">深度分析</button>
@@ -67,7 +68,7 @@
           <button type="button" class="icon-btn" id="attach-btn" aria-label="附加文件" title="附加文件（也可以输入 @）">
             <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 7.5l-5.3 5.3a3.2 3.2 0 01-4.5-4.5l5.6-5.6a2.1 2.1 0 013 3L6.2 11.3a1 1 0 01-1.5-1.5L9.8 4.7"/></svg>
           </button>
-          <div class="scope-wrap">
+          <div class="scope-wrap" id="scope-wrap">
             <button type="button" class="scope-btn" id="scope-btn" aria-expanded="false" aria-controls="scope-pop">
               <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></svg>
               <span id="scope-label">全部资料</span>

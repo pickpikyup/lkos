@@ -26,6 +26,12 @@ def answer_lang(question: str, cfg=None) -> str:
     return detect_lang(question)
 
 
+CHAT_MAX_TOKENS = 1024
+CHAT_SYSTEM = {
+    "zh": "你是乐于助人的助手。回答准确、简洁、有条理；不确定的事情直接说不确定，不要编造。用中文回答。",
+    "en": "You are a helpful assistant. Be accurate, concise and well organised; say so when you are not sure. Answer in English.",
+    "fr": "Tu es un assistant serviable. Sois précis, concis et structuré ; dis-le si tu n'es pas sûr. Réponds en français.",
+}
 ONLINE_TOP_K = 12   # 在线模型一次检索的片段数（本机模型按 retrieval.top_k）
 
 
@@ -50,6 +56,29 @@ class QAService:
         with self.marker.active():
             return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context, scope, history,
                              pinned, confirm)
+
+    def chat(self, question: str, model_override: str | None = None, history=None,
+             on_token: TokenCallback | None = None) -> Answer:
+        """纯对话：不查资料库，不用向量和关键词检索，直接和模型对话（带上同一对话之前的轮次）。"""
+        question = question.strip()
+        ref = self.gateway.resolve(TASK, model_override)
+        online = self.is_online(ref)
+        mcfg = self.cfg.chat_model(ref)
+        turns = [t if isinstance(t, Turn) else Turn(question=t[0], answer=t[1]) for t in (history or [])]
+        max_out = (mcfg.max_output or CHAT_MAX_TOKENS) if online else CHAT_MAX_TOKENS
+        hist = history_messages(turns, online, mcfg.context_window - max_out, chat=True)
+        lang = answer_lang(question, self.cfg)
+        messages = [{"role": "system", "content": CHAT_SYSTEM.get(lang, CHAT_SYSTEM["en"])}, *hist,
+                    {"role": "user", "content": question}]
+        if self.marker is None:
+            result, _ = self.gateway.chat(TASK, messages, model_override=model_override, on_token=on_token,
+                                          max_tokens=max_out, log_as="chat")
+        else:
+            with self.marker.active():
+                result, _ = self.gateway.chat(TASK, messages, model_override=model_override, on_token=on_token,
+                                              max_tokens=max_out, log_as="chat")
+        return Answer(text=result.text.strip(), no_context=False, context=[], ttft_ms=result.ttft_ms,
+                      latency_ms=result.latency_ms, input_tokens=result.input_tokens, output_tokens=result.output_tokens)
 
     def is_online(self, ref: str) -> bool:
         pc = self.cfg.providers.get(ref.split("/", 1)[0])

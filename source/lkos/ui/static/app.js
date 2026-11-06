@@ -4,7 +4,7 @@
   "use strict";
 
   const S = {
-    view: "qa", mode: "qa", models: [], model: "", history: [], sources: [], index: { state: "idle" },
+    view: "qa", mode: "chat", models: [], model: "", history: [], sources: [], index: { state: "idle" },
     paused: false, cur: null, sel: null, lib: null, confirmRemove: null, problemsCount: 0, libEdit: null,
     settings: { dev_mode: false },
     scope: { source_ids: [], file_types: [], days: 0, path: null, tags: [] }, scopeOpen: false, tags: [],
@@ -62,7 +62,7 @@
         c.text += e.text;
         if (c.kind === "analysis") updateBar(c);
         const el = $("answer-live");
-        if (el) el.innerHTML = answerHTML(c.text, true, "cur");
+        if (el) el.innerHTML = answerHTML(c.text, true, "cur", c.kind === "chat");
         keepBottom();
       } else if (e.type === "done") {
         S.cur = null;
@@ -102,7 +102,7 @@
     try {
       S.modelRef = localStorage.getItem("lkos.model") || "";
       const m = localStorage.getItem("lkos.mode");
-      if (m === "search" || m === "qa" || m === "analysis") S.mode = m;
+      if (m === "chat" || m === "search" || m === "qa" || m === "analysis") S.mode = m;
     } catch (e) { /* 忽略 */ }
     setMode(S.mode);
     renderSide(); renderStatus(); renderQA(); renderAside(); renderScope();
@@ -267,9 +267,10 @@
     return `<div class="banner" role="alert"><div><strong>本机模型没有就绪</strong>：${bad.map((m) => esc(m.ref)).join("、")}。<br>请先打开 Ollama 应用；如果缺模型，在终端运行 <code>ollama pull 模型名</code>，然后重新打开本应用。也可以在左栏“模型”里换用别的模型。</div></div>`;
   }
 
-  function answerHTML(text, streaming, turn) {
+  function answerHTML(text, streaming, turn, plain) {
     let h = esc(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     h = h.replace(/^#{2,4}\s*(.+)(?:\n|$)/gm, '<span class="ah">$1</span>');
+    if (plain) return h + (streaming ? '<span class="caret" aria-hidden="true"></span>' : "");   // 对话模式没有出处编号
     const on = (n) => String(S.selTurn) === String(turn) && Number(n) === S.sel;
     h = h.replace(/\[(\d+(?:\s*[,，、]\s*\d+)*)\]/g, (_, nums) =>
       nums.split(/\s*[,，、]\s*/).map((n) => `<button type="button" class="ref${on(n) ? " on" : ""}" data-ref="${n}" data-turn="${turn}" aria-label="出处 ${n}">${n}</button>`).join(""));
@@ -282,7 +283,7 @@
     return `<div class="found"><span>依据 ${files.length} 份资料</span>${files.slice(0, 3).map((f) => `<span class="pill" title="${esc(f)}">${esc(f)}</span>`).join("")}</div>`;
   }
 
-  const KIND_LABEL = { qa: "分析", search: "关键词检索", analysis: "深度分析", summary: "全文总结", extract: "信息提取" };
+  const KIND_LABEL = { chat: "对话", qa: "分析", search: "关键词检索", analysis: "深度分析", summary: "全文总结", extract: "信息提取" };
   function questionBlock(kind, question, scope, attachments) {
     const title = String(question).replace(/^(分析|提取)：/, "");
     const notes = [];
@@ -364,8 +365,9 @@
         <button type="button" class="btn primary" data-action="add">添加文件夹</button></div>`;
     }
     return `<div class="welcome"><h1>问你的资料</h1>
-      <p>已索引 ${fmt(st.files)} 个文件、${fmt(st.chunks)} 个文本块。三种方式：</p>
+      <p>已索引 ${fmt(st.files)} 个文件、${fmt(st.chunks)} 个文本块。四种方式：</p>
       <ul class="modes-help">
+        <li><strong>对话</strong>：直接和模型聊，不查资料库。</li>
         <li><strong>关键词检索</strong>：按原文逐字查找，列出文件和位置，不用模型，最快。</li>
         <li><strong>分析</strong>：理解问题后找资料，用文档写出带出处的回答。</li>
         <li><strong>深度分析</strong>：拆解问题、把关键词译成中英法分别检索全部资料，再按方面分析。</li>
@@ -395,6 +397,7 @@
     const ex = r.extra || {};
     let h = questionBlock(r.kind, r.question, ex.scope, ex.attachments);
     if (r.kind === "search") return h + searchHTML(r);
+    if (r.kind === "chat") return h + `<div class="answer">${answerHTML(r.answer, false, r.id, true)}</div>` + metaHTML(r);
     if (r.not_found) return h + notFoundHTML(r);
     if (r.context.length) h += foundPills(r.context);
     if (r.kind === "analysis" && (ex.aspects || []).length) {
@@ -411,8 +414,9 @@
     const ex = r.extra || {}, parts = [];
     if (r.ttft_ms != null && r.kind !== "search") parts.push("首字 " + sec(r.ttft_ms));
     if (r.latency_ms != null) parts.push("共 " + sec(r.latency_ms));
-    if (ex.sent) parts.push(`发送了 ${ex.sent.chunks} 段资料${ex.sent.turns ? `和 ${ex.sent.turns} 轮对话` : ""}`);
-    if (r.kind !== "search" && !r.not_found && !r.cited.length) parts.push("没有标注出处，请在右侧核对原文");
+    if (ex.sent && r.kind === "chat") parts.push(ex.sent.turns ? `发送了 ${ex.sent.turns} 轮对话记录` : "");
+    else if (ex.sent) parts.push(`发送了 ${ex.sent.chunks} 段资料${ex.sent.turns ? `和 ${ex.sent.turns} 轮对话` : ""}`);
+    if (r.kind !== "search" && r.kind !== "chat" && !r.not_found && !r.cited.length) parts.push("没有标注出处，请在右侧核对原文");
     return `<div class="meta">${r.kind === "search" ? "" : modelTag(r.model_name, r.online)}<span>${parts.join(" · ")}</span><span class="grow"></span>
       <button type="button" class="btn small" data-branch="${r.id}" title="保留到这一轮为止的内容，另开一个对话">分支</button>
       ${r.kind === "search" ? "" : `<button type="button" class="btn small" data-copy-turn="${r.id}">复制</button>`}</div>`;
@@ -453,7 +457,9 @@
 
   function curHTML(c) {
     let h = questionBlock(c.kind, c.question, c.scope, c.attachments);
-    if (c.kind === "analysis" && (c.phase === "retrieving" || c.phase === "reading")) {
+    if (c.kind === "chat" && (c.phase === "retrieving" || c.phase === "reading")) {
+      h += `<div class="thinking"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>${esc(c.model_name || "模型")}正在思考${c.online ? "" : "（本机模型通常几秒后开始出字）"}</div>`;
+    } else if (c.kind === "analysis" && (c.phase === "retrieving" || c.phase === "reading")) {
       h += analysisSteps(c);
     } else if (c.phase === "retrieving" || c.phase === "reading") {
       const reading = c.phase === "reading";
@@ -467,7 +473,7 @@
     } else if (c.phase === "streaming") {
       if (c.kind === "analysis") h += barHTML(c);
       if (c.sources && c.sources.length) h += foundPills(c.sources);
-      h += `<div class="answer" id="answer-live" aria-live="polite">${answerHTML(c.text, true, "cur")}</div>
+      h += `<div class="answer" id="answer-live" aria-live="polite">${answerHTML(c.text, true, "cur", c.kind === "chat")}</div>
         <div class="meta">${modelTag(c.model_name, c.online)}</div>`;
     } else if (c.phase === "stopped") {
       h += `<div class="answer">${answerHTML(c.text || "", false, "cur")}</div><div class="meta">${modelTag(c.model_name, c.online)}<span>${c.text ? "已停止生成（这一轮没有保存）" : "已取消"}</span></div>`;
@@ -533,6 +539,10 @@
     const a = $("aside");
     const r = selTurnRecord();
     if (r && r.kind === "search") return renderSearchAside(a, r);
+    if ((r && r.kind === "chat") || (S.selTurn === "cur" && S.cur && S.cur.kind === "chat")) {
+      a.innerHTML = `<h2>出处</h2><div class="aside-empty">对话模式不查资料库，回答来自模型本身的知识，没有出处。想依据你的资料回答，切换到“分析”。</div>`;
+      return;
+    }
     const list = currentSources();
     if (!list.length) {
       const loading = S.selTurn === "cur" && S.cur && S.cur.phase === "retrieving";
@@ -637,6 +647,7 @@
       `<option value="__config">配置模型…</option>`;
     sel.value = S.modelRef;
     $("model-wrap").hidden = S.mode === "search";
+    $("scope-wrap").hidden = S.mode === "chat";
     $("model-wrap").classList.toggle("online", !!(currentChoice() && currentChoice().online));
   }
 
@@ -651,18 +662,21 @@
       parts.push(`<div class="ctx-chip"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 4h10M3 8h7M3 12h4"/></svg>
         <span>继续对话：${esc(first)} · 已 ${turns.length} 轮</span><button type="button" class="link" data-action="new">新对话 ⌘N</button></div>`);
     }
-    if (S.attach.length) {
+    if (S.attach.length && S.mode !== "chat") {
       parts.push(`<div class="attach-row">${S.attach.map((f, i) => `<span class="att${S.mode !== "search" && currentChoice() && currentChoice().online && !f.online_ok ? " blocked" : ""}" title="${esc(f.path)}">
         <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2h5l3 3v9H4z"/></svg>${esc(f.name)}
         <span class="tk">约 ${fmt(Math.round(f.tokens / 1000) || 1)}k</span><button type="button" data-unattach="${i}" aria-label="去掉 ${esc(f.name)}">×</button></span>`).join("")}</div>`);
     }
     const c = currentChoice();
-    if (S.mode !== "search" && c && c.online) {
+    if (S.mode === "chat" && c && c.online) {
+      parts.push(`<div class="online-note"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/></svg>
+        <span>在线：你的问题${turns.length ? "和这个对话的记录" : ""}会发送到 ${esc(c.name)}；对话模式不发送资料库里的内容</span></div>`);
+    } else if (S.mode !== "search" && c && c.online) {
       const tk = S.attach.reduce((s, f) => s + f.tokens, 0);
       const over = tk > c.context_window * 0.7;
       parts.push(`<div class="online-note${over ? " warn" : ""}"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/></svg>
         <span>在线：本机检索到的资料片段${turns.length ? "、这个对话的记录" : ""}${S.attach.length ? "和附加文件的全文" : ""}会发送到 ${esc(c.name)}${S.settings.confirm_online !== false ? "，发送前可以逐段确认" : ""}${over ? `。附加的文件约 ${fmt(Math.round(tk / 1000))}k token，接近模型上限，可能放不下` : ""}</span></div>`);
-    } else if (S.mode !== "search" && S.attach.length) {
+    } else if (S.mode !== "search" && S.mode !== "chat" && S.attach.length) {
       parts.push(`<div class="online-note local"><span>本机模型放不下整份文件：只在附加的文件里检索</span></div>`);
     }
     top.innerHTML = parts.join("");
@@ -688,7 +702,7 @@
 
   // ---------------- 发送 ----------------
   let ticker = null;
-  const GEN_TEXT = { qa: "正在回答，可以先在右侧核对原文", analysis: "深度分析中，可以随时停止" };
+  const GEN_TEXT = { chat: "正在回答", qa: "正在回答，可以先在右侧核对原文", analysis: "深度分析中，可以随时停止" };
 
   async function submit(text, opts) {
     opts = opts || {};
@@ -719,8 +733,8 @@
     const choice = currentChoice();
     const ref = opts.model || (choice && choice.ref) || null;
     const ch = S.choices.find((c) => c.ref === ref) || choice;
-    const attach = S.attach.map((f) => f.path);
-    S.cur = { phase: "retrieving", kind: mode, question: q, text: "", sources: [], scope, attachments: attach,
+    const attach = mode === "chat" ? [] : S.attach.map((f) => f.path);
+    S.cur = { phase: "retrieving", kind: mode, question: q, text: "", sources: [], scope: mode === "chat" ? null : scope, attachments: attach,
               model_name: ch ? ch.name : "", online: !!(ch && ch.online) };
     S.selTurn = "cur"; S.sel = null;
     $("gen-text").textContent = (ch && ch.online ? `${ch.name}（在线）` : "") + (GEN_TEXT[mode] || GEN_TEXT.qa);
@@ -729,7 +743,7 @@
     setGenerating(true);
     let r;
     try {
-      r = await api("send", q, mode, tid, ref, scope, attach);
+      r = await api("send", q, mode, tid, ref, mode === "chat" ? null : scope, attach);
     } catch (e) { r = { error: String(e.message || e) }; }
     if (r.need_consent) {
       setGenerating(false);
@@ -739,7 +753,8 @@
     }
     if (r.error) { S.cur.phase = "error"; S.cur.error = r.error; setGenerating(false); renderQA(); return; }
     S.cur.qid = r.qid;
-    S.attach = []; renderComposerTop();
+    if (mode !== "chat") S.attach = [];
+    renderComposerTop();
     clearInterval(ticker);
     ticker = setInterval(() => {
       const c = S.cur;
@@ -769,6 +784,7 @@
   }
 
   const PLACEHOLDER = {
+    chat: "和模型直接对话（不查资料库），⌘↩ 发送",
     search: "输入要查找的词，按原文逐字匹配（空格分开表示都要出现，引号表示整体），⌘↩ 查找",
     qa: "问一个关于你资料的问题；@ 可以附加文件；⌘↩ 发送",
     analysis: "要深入分析的问题，例如“二期项目有哪些主要风险、怎么应对？”；⌘↩ 发送",
@@ -778,7 +794,7 @@
     try { localStorage.setItem("lkos.mode", mode); } catch (e) { /* 忽略 */ }
     document.querySelectorAll(".composer .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
     $("q").placeholder = PLACEHOLDER[mode] || PLACEHOLDER.qa;
-    $("attach-btn").hidden = mode === "search";
+    $("attach-btn").hidden = mode === "search" || mode === "chat";
     renderModelSelect(); renderComposerTop();
     $("q").focus();
   }
@@ -1517,7 +1533,7 @@
   $("q").addEventListener("compositionend", () => { compositionEndAt = Date.now(); });
   $("q").addEventListener("input", () => {
     const t = $("q"), m = t.value.slice(0, t.selectionStart).match(/(?:^|\s)@([^\s@]*)$/);
-    if (m && S.mode !== "search") {
+    if (m && S.mode !== "search" && S.mode !== "chat") {
       if (!S.picker || !S.picker.fromAt) openPicker(m[1], true);
       else { S.picker.query = m[1]; loadPicker(); }
     } else if (S.picker && S.picker.fromAt) closePicker();

@@ -71,20 +71,31 @@ def clean_answer(text: str, limit: int) -> str:
     return a if len(a) <= limit else a[:limit].rstrip() + "……"
 
 
-def history_messages(turns: list[Turn], online: bool, num_ctx: int) -> list[dict]:
+CHAT_HISTORY_SHARE = 0.6        # 纯对话不带资料：对话历史可以占更多上下文
+CHAT_ANSWER_CHARS = 1500
+
+
+def history_messages(turns: list[Turn], online: bool, num_ctx: int, chat: bool = False) -> list[dict]:
+    """chat=True（纯对话，不查资料）：本机模型也按预算尽量多带几轮。"""
     if not turns:
         return []
+    if chat and not online:
+        return _fit_turns(turns, int(num_ctx * CHAT_HISTORY_SHARE), CHAT_ANSWER_CHARS)
     if not online:
         msgs = []
         for t in turns[-LOCAL_TURNS:]:
             msgs += [{"role": "user", "content": t.question},
                      {"role": "assistant", "content": clean_answer(t.answer, LOCAL_ANSWER_CHARS)}]
         return msgs
-    budget = int(num_ctx * ONLINE_HISTORY_SHARE)
+    return _fit_turns(turns, int(num_ctx * (CHAT_HISTORY_SHARE if chat else ONLINE_HISTORY_SHARE)), ONLINE_ANSWER_CHARS)
+
+
+def _fit_turns(turns: list[Turn], budget: int, answer_chars: int) -> list[dict]:
+    """从最近的一轮往前装，直到预算用完。"""
     picked: list[list[dict]] = []
     for t in reversed(turns):
         pair = [{"role": "user", "content": t.question},
-                {"role": "assistant", "content": clean_answer(t.answer, ONLINE_ANSWER_CHARS)}]
+                {"role": "assistant", "content": clean_answer(t.answer, answer_chars)}]
         cost = sum(estimate_tokens(m["content"]) + 4 for m in pair)
         if cost > budget:
             break

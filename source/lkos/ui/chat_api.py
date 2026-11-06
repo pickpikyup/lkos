@@ -33,7 +33,7 @@ class ChatMixin:
     # ---------- 发送 ----------
     def send(self, question: str, mode: str = "qa", thread_id: int | None = None, model: str | None = None,
              scope: dict | None = None, attachments: list[str] | None = None) -> dict:
-        """mode：search（关键词检索，不用模型）/ qa（分析）/ analysis（深度分析）。
+        """mode：chat（纯对话，不查资料）/ search（关键词检索，不用模型）/ qa（分析）/ analysis（深度分析）。
         thread_id：接着哪个对话问（空 = 新对话）；model：模型引用（空 = 本机默认模型）；
         attachments：附加的文件路径。"""
         question = (question or "").strip()
@@ -41,7 +41,7 @@ class ChatMixin:
             return {"error": "请输入内容"}
         if mode == "search":
             return self._keyword(question, thread_id, scope)
-        if mode not in ("qa", "analysis"):
+        if mode not in ("chat", "qa", "analysis"):
             return {"error": f"不支持的模式：{mode}"}
         choices = {c["ref"]: c for c in self.model_choices()}
         ref = model or next(iter(choices))
@@ -57,6 +57,19 @@ class ChatMixin:
         def work(cb, t0):
             qid = cb["qid"]
             turns = turns_from_records(self._app.repo.thread_turns(int(thread_id))) if thread_id else []
+            if mode == "chat":
+                log.info("对话：%s（模型 %s%s）", question, choice["name"],
+                         f"，接着对话 #{thread_id} 第 {len(turns) + 1} 轮" if turns else "")
+                if online:
+                    log.info("发送到在线模型 %s（%s）：问题和 %d 轮对话（对话模式不发送资料）", choice["name"],
+                             choice["service"], len(turns))
+                ans = self._app.qa.chat(question, model_override=ref, history=turns, on_token=cb["on_token"])
+                ans.latency_ms = int((time.perf_counter() - t0) * 1000)
+                extra = {"mode": "chat"}
+                if online:
+                    extra["sent"] = {"service": choice["service"], "model": choice["name"], "chunks": 0, "files": [],
+                                     "excluded": 0, "turns": len(turns)}
+                return self._save(question, ans, kind="chat", extra=extra, thread_id=thread_id, model=ref)
             sc = Scope.from_dict(scope)
             pinned = []
             if attachments and online:
@@ -87,7 +100,7 @@ class ChatMixin:
             log.info("回答完成（%s）：首字 %s ms、共 %s ms、输入 %s / 输出 %s tokens、出处 %s", choice["name"], ans.ttft_ms,
                      ans.latency_ms, ans.input_tokens, ans.output_tokens, record["cited"] or "无")
             return record
-        return self._start("q" if mode == "qa" else "a", work)
+        return self._start({"chat": "c", "qa": "q"}.get(mode, "a"), work)
 
     def _keyword(self, query: str, thread_id, scope) -> dict:
         def run():

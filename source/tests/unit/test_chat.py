@@ -202,3 +202,26 @@ def test_deep_analysis_in_thread_follows_language(setup):
     assert any(m["content"] == "What is the log retention period?" for m in local.messages[-1])
     r3 = done(b, b.send("项目二期的预算和进度怎么样？", mode="analysis"))
     assert "用中文回答" in local.messages[-1][0]["content"] and r3["extra"]["keywords"]
+
+
+def test_plain_chat_no_retrieval(setup):
+    b, local, cloud, corpus = setup
+    searches = []
+    orig = b._app.retriever.search
+    b._app.retriever.search = lambda *a, **k: searches.append(a) or orig(*a, **k)
+    r1 = done(b, b.send("你好，介绍一下你自己", mode="chat"))
+    assert r1["kind"] == "chat" and r1["context"] == [] and not r1["not_found"] and r1["answer"]
+    assert not searches                                                     # 不查资料库
+    msgs = local.messages[-1]
+    assert msgs[0]["role"] == "system" and "资料" not in msgs[-1]["content"] and msgs[-1]["content"] == "你好，介绍一下你自己"
+    r2 = done(b, b.send("再说详细点", mode="chat", thread_id=r1["thread_id"]))
+    assert r2["thread_id"] == r1["thread_id"] and local.messages[-1][1]["content"] == "你好，介绍一下你自己"
+    # 对话之后接着用“分析”：之前的对话也算上下文
+    r3 = done(b, b.send("项目二期的预算上限是多少？", thread_id=r1["thread_id"]))
+    assert r3["kind"] == "qa" and any(m["content"] == "再说详细点" for m in local.messages[-1])
+    # 在线对话：不需要逐段确认，不发资料
+    b.consent_online("cloud")
+    r4 = done(b, b.send("换个角度说", mode="chat", thread_id=r1["thread_id"], model=ONLINE))
+    assert r4["online"] and r4["extra"]["sent"]["chunks"] == 0 and r4["extra"]["sent"]["turns"] == 3
+    assert not any(e["type"] == "confirm_send" for e in b._sent)
+    assert len(cloud.messages[-1]) == 1 + 2 * 3 + 1

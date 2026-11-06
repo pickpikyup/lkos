@@ -560,6 +560,8 @@ class Bridge(ChatMixin, ModelsMixin):
         # 回答了一部分、另一部分说“资料中没有提到”的，照常显示回答
         if kind == "extract":
             not_found = not (extra or {}).get("rows")
+        elif kind in ("chat", "search"):
+            not_found = False
         else:
             not_found = bool(ans.no_context) or (not cited and is_not_found(ans.text) and len(ans.text) <= 60)
         model = model or self._app.cfg.tasks["knowledge_qa"].default_model
