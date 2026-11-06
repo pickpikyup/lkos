@@ -333,3 +333,15 @@ input.mini { width: 140px; }
 .tag-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg); font-size: 13px; color: var(--ink-2); }
 .tag-chip:hover { border-color: var(--accent); color: var(--accent-ink); }
 .tag-chip .n { font-size: 11px; color: var(--muted); }
+.pbar { display: flex; align-items: center; gap: 12px; }
+.pbar .track { flex: 1; height: 6px; border-radius: 3px; background: var(--soft); overflow: hidden; }
+.pbar .fill { height: 100%; border-radius: 3px; background: var(--accent); transition: width .4s ease; }
+.pbar .pct { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+.steps li.kwrow { display: block; padding-left: 32px; }
+.kwlist { display: flex; flex-direction: column; gap: 6px; }
+.kw { display: flex; align-items: baseline; gap: 10px; font-size: 13px; }
+.kw .lang { flex: 0 0 64px; font-size: 12px; color: var(--muted); }
+.kw .words { flex: 1; color: var(--ink-2); }
+.kw .n { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.kwdone summary { cursor: pointer; font-size: 13px; color: var(--muted); margin-bottom: 8px; }
+@media (prefers-reduced-motion: reduce) { .pbar .fill { transition: none; } }

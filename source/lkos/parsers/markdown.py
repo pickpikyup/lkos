@@ -16,6 +16,7 @@ _FENCE = re.compile(r"^ {0,3}(```|~~~)")
 class MarkdownParser:
     extensions = (".md", ".markdown")
     file_type = "md"
+    label = "Markdown"  # 界面上的类型名（范围筛选、文件夹设置）
 
     def parse(self, path: Path) -> Iterator[Block]:
         raw = Path(path).read_bytes()

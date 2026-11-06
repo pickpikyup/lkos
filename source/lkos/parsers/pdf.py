@@ -26,6 +26,7 @@ except Exception:  # noqa: BLE001 - 旧版本没有此开关
 class PdfParser:
     extensions = (".pdf",)
     file_type = "pdf"
+    label = "PDF"  # 界面上的类型名（范围筛选、文件夹设置）
 
     def parse(self, path: Path, ocr: Callable[[bytes], str] | None = None,
               before_ocr: Callable[[], None] | None = None) -> Iterator[Block]:

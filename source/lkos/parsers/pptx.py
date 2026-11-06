@@ -44,6 +44,7 @@ def _shape_texts(shapes) -> Iterator[str]:
 class PptxParser:
     extensions = (".pptx",)
     file_type = "pptx"
+    label = "PowerPoint"  # 界面上的类型名（范围筛选、文件夹设置）
 
     def parse(self, path: Path) -> Iterator[Block]:
         with open(path, "rb") as f:

@@ -8,7 +8,7 @@ import pytest
 from lkos.app import App
 from lkos.errors import Cancelled, LkosError
 from lkos.gateway.fake import FakeProvider
-from lkos.qa.analysis import parse_aspects
+from lkos.qa.analysis import parse_aspects, parse_keywords
 from lkos.qa.extract import parse_columns, parse_rows, to_csv, to_markdown
 from lkos.types import Scope
 from tests.conftest import TEST_DIM, fake_overrides
@@ -39,6 +39,13 @@ def test_parse_columns_and_rows():
     assert csv.startswith("﻿名称,出处文件,出处位置") and "硬件,计划.docx,第 3 段" in csv
 
 
+def test_parse_keywords():
+    assert parse_keywords("中文：预算、进度\n- English: budget, schedule\nFrançais : budget calendrier…\nEnglish: again") == \
+        {"zh": "预算 进度", "en": "budget schedule", "fr": "budget calendrier"}
+    assert parse_keywords("1. 英文: retention policy\n其他内容") == {"en": "retention policy"}
+    assert parse_keywords("没有按格式输出") == {}
+
+
 def test_parse_aspects():
     assert parse_aspects("1. 预算构成\n2、进度风险\n- 预算构成\n\n· 人员安排\n五、其他\n六、多余") == \
         ["预算构成", "进度风险", "人员安排", "其他"]
@@ -56,6 +63,8 @@ class Scripted(FakeProvider):
             self.answer_fn = lambda m: json.dumps([{"项目": "硬件", "金额": "四十万", "来源": 1},
                                                    {"项目": "软件", "金额": "八十万", "来源": 1},
                                                    {"项目": "硬件", "金额": "四十万", "来源": 1}], ensure_ascii=False)
+        elif "检索关键词" in user:
+            self.answer_fn = lambda m: "好的：\n中文：预算、进度\nEnglish: budget, schedule\nFrançais : budget, calendrier…"
         elif "拆成 2–4 个" in user:
             self.answer_fn = lambda m: "1. 预算\n2. 进度"
         else:
@@ -87,11 +96,21 @@ def test_extract_library_and_file(app, corpus):
 
 
 def test_analysis_aspects_and_citations(app):
-    stages, tokens = [], []
-    ans, aspects = app.analyzer.analyze("项目二期的预算和进度怎么样？", on_progress=lambda s, d, t: stages.append(s),
-                                        on_token=tokens.append)
+    stages, details, tokens = [], {}, []
+
+    def on_progress(stage, done, total, detail=None):
+        stages.append(stage)
+        details.update(detail or {})
+
+    ans, aspects, info = app.analyzer.analyze("项目二期的预算和进度怎么样？", on_progress=on_progress,
+                                              on_token=tokens.append)
     assert aspects == ["预算", "进度"]
-    assert stages[0] == "plan" and "search" in stages and stages[-1] == "write"
+    assert stages[0] == "plan" and stages.index("keywords") < stages.index("search") and stages[-1] == "write"
+    assert info["keywords"] == {"zh": "预算 进度", "en": "budget schedule", "fr": "budget calendrier"}
+    assert set(info["lang_hits"]) == {"zh", "en", "fr"} and all(info["lang_hits"].values())
+    assert details["keywords"] == info["keywords"] and details["lang_hits"] == info["lang_hits"]
+    names = {c.file_name for c in ans.context}
+    assert {"security-policy.md", "guide-accueil.md"} & names                # 英文、法文资料也进了上下文
     assert ans.citations and not ans.invalid_refs and "".join(tokens).startswith("### 预算")
     with pytest.raises(LkosError):
         app.analyzer.analyze("  ")
@@ -152,6 +171,8 @@ def test_bridge_extract_and_csv(bridge, corpus, tmp_path):
 def test_bridge_analysis_scope_and_follow_up(bridge, corpus):
     rec = _done(bridge, bridge.analyze("项目二期的预算和进度怎么样？")["qid"])
     assert rec["kind"] == "analysis" and rec["extra"]["aspects"] == ["预算", "进度"] and rec["cited"]
+    assert rec["extra"]["keywords"]["en"] == "budget schedule" and set(rec["extra"]["lang_hits"]) == {"zh", "en", "fr"}
+    assert any(e["type"] == "progress" and e["stage"] == "keywords" and e["detail"].get("keywords") for e in bridge._sent)
     assert any(e["type"] == "progress" and e["stage"] == "plan" for e in bridge._sent)
     first = _done(bridge, bridge.ask("预算是多少？", scope={"file_types": ["pdf"]})["qid"])
     assert first["extra"]["scope"] == {"file_types": ["pdf"]}

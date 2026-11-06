@@ -94,3 +94,26 @@ def test_bridge_folder_settings(tmp_path, docs):
         assert lib["sources"][0]["exclude"]["patterns"] == ["归档"] and "ocr_available" in lib
     finally:
         b._close()
+
+
+def test_file_type_groups_follow_parsers(tmp_path):
+    """界面上的文件类型来自解析器注册表：每种能识别的扩展名都要出现，新增格式时自动同步。"""
+    from lkos.config import DEFAULT_EXTENSIONS
+    from lkos.parsers.base import _registry, file_type_groups
+
+    groups = file_type_groups(list(DEFAULT_EXTENSIONS))
+    exts = {e for g in groups for e in g["exts"]}
+    assert exts == {e.lstrip(".") for e in DEFAULT_EXTENSIONS}
+    types = {t for g in groups for t in g["types"]}
+    assert types == {p.file_type for p in _registry() if set(p.extensions) & set(DEFAULT_EXTENSIONS)}
+    assert all(getattr(p, "label", "") for p in _registry())                 # 新解析器要写 label
+    ppt = next(g for g in groups if g["label"] == "PowerPoint")
+    assert ppt["indexable"] and ppt["skipped_exts"] == ["ppt"]
+    assert {g["label"] for g in file_type_groups()} >= {"PDF", "Word", "PowerPoint", "Markdown"}
+
+    b = Bridge(home=tmp_path / "h", overrides=fake_overrides(), providers={"test": FakeProvider("test", dim=TEST_DIM)},
+               auto_refresh=False)
+    try:
+        assert b.boot()["file_types"] == groups
+    finally:
+        b._close()

@@ -57,6 +57,7 @@ def _outline_level(ppr) -> int | None:
 class DocxParser:
     extensions = (".docx",)
     file_type = "docx"
+    label = "Word"  # 界面上的类型名（范围筛选、文件夹设置）
 
     def parse(self, path: Path) -> Iterator[Block]:
         with open(path, "rb") as f:

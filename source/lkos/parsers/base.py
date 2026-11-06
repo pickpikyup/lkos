@@ -41,6 +41,30 @@ def _registry() -> list[Parser]:
     return [PdfParser(), DocxParser(), PptxParser(), MarkdownParser(), DocParser(), PptParser()]
 
 
+def file_type_groups(allowed: list[str] | None = None) -> list[dict]:
+    """界面上可选的文件类型（范围筛选、文件夹设置里的“不索引”），直接由解析器注册表生成：
+    以后新增一种格式，只要在 _registry() 里加上解析器（写好 label），界面就会自动出现。
+
+    返回 [{"key", "label", "types"（files.file_type 值）, "exts"（扩展名，不带点）, "indexable"，
+    "skipped_exts"（能识别但不解析、只提示的扩展名，如 .ppt）}]，
+    同一个 label 的解析器合成一组（如 Word = .docx + .doc），按注册顺序排列。"""
+    groups: dict[str, dict] = {}
+    for p in _registry():
+        exts = [e for e in p.extensions if allowed is None or e in allowed]
+        if not exts:
+            continue
+        label = getattr(p, "label", None) or p.file_type.upper()
+        g = groups.setdefault(label, {"key": label.lower(), "label": label, "types": [], "exts": [], "indexable": False,
+                                      "skipped_exts": []})
+        g["types"].append(p.file_type)
+        g["exts"] += [e.lstrip(".") for e in exts]
+        if getattr(p, "supported", True):
+            g["indexable"] = True
+        else:
+            g["skipped_exts"] += [e.lstrip(".") for e in exts]
+    return list(groups.values())
+
+
 def parser_for(path: Path, allowed: list[str] | None = None) -> Parser | None:
     ext = path.suffix.lower()
     if allowed is not None and ext not in allowed:

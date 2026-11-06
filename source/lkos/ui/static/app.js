@@ -44,6 +44,7 @@
       if (!c || c.qid !== e.qid) return;
       if (e.type === "progress") {
         c.progress = e;
+        c.info = Object.assign(c.info || {}, e.detail || {});
         if (c.phase === "retrieving") c.phase = "reading";
         renderQA();
       } else if (e.type === "sources") {
@@ -53,6 +54,7 @@
       } else if (e.type === "token") {
         if (c.phase !== "streaming") { c.phase = "streaming"; renderQA(); }
         c.text += e.text;
+        if (c.kind === "analysis") updateBar(c);
         const el = $("answer-live");
         if (el) el.innerHTML = answerHTML(c.text, true);
         keepBottom();
@@ -84,7 +86,7 @@
     try {
       const b = await api("boot");
       S.models = b.models; S.model = b.model; S.history = b.history; S.sources = b.sources; S.index = b.index;
-      S.stats = b.stats; S.settings = b.settings || S.settings;
+      S.stats = b.stats; S.settings = b.settings || S.settings; setFileTypes(b.file_types);
     } catch (err) {
       S.bootError = String(err && err.message || err);
     }
@@ -168,7 +170,17 @@
   }
 
   // ---------------- 范围（文件夹 / 类型 / 时间 / 单个文件） ----------------
-  const TYPES = [["pdf", "PDF", ["pdf"]], ["docx", "Word", ["docx", "doc"]], ["pptx", "PowerPoint", ["pptx", "ppt"]], ["md", "Markdown", ["md"]]];
+  // 文件类型由 Python 端的解析器注册表生成（boot 返回 file_types），新增格式时这里自动出现
+  let TYPES = [], SKIP_TYPES = [], FORMATS = "";
+  function setFileTypes(groups) {
+    const list = groups && groups.length ? groups : [{ key: "pdf", label: "PDF", types: ["pdf"], exts: ["pdf"], indexable: true }];
+    TYPES = list.filter((g) => g.indexable).map((g) => [g.key, g.label, g.types]);
+    SKIP_TYPES = list.map((g) => [g.key, g.label, g.exts]);
+    FORMATS = list.filter((g) => g.indexable).map((g) => (g.skipped_exts || []).length
+      ? `${g.label}（${g.exts.filter((e) => !g.skipped_exts.includes(e)).map((e) => "." + e).join(" / ")}）` : g.label).join("、");
+    const drop = $("drop-formats");
+    if (drop) drop.textContent = FORMATS;
+  }
   const DAYS = [[0, "不限"], [7, "近 7 天"], [30, "近 30 天"], [365, "近一年"]];
   const baseName = (p) => String(p || "").split("/").filter(Boolean).pop() || p;
 
@@ -270,14 +282,53 @@
   }
   const SKELETON = '<div class="skeleton" aria-hidden="true"><div style="width:92%"></div><div style="width:78%"></div><div style="width:54%"></div></div>';
 
+  const LANG_NAME = { zh: "中文", en: "English", fr: "Français" };
+
+  // 深度分析的总进度（估算）：拆分 0–8%，关键词 8–16%，检索 16–35%，模型读资料 35–45%，写分析 45–100%（按已写字数）
+  function analysisPct(c) {
+    const p = c.progress || { stage: "plan", done: 0, total: 1 }, frac = p.total ? p.done / p.total : 0;
+    if (c.phase === "streaming") return Math.min(99, 45 + 55 * Math.min(1, (c.text || "").length / 1100));
+    if (p.stage === "plan") return 8 * frac;
+    if (p.stage === "keywords") return 8 + 8 * frac;
+    if (p.stage === "search" && p.done < p.total) return 16 + 19 * frac;
+    const waited = c.writeSince ? (Date.now() - c.writeSince) / 1000 : 0;
+    return 35 + 10 * Math.min(1, waited / 40);
+  }
+  function barHTML(c) {
+    const pct = Math.round(analysisPct(c));
+    return `<div class="pbar" role="progressbar" aria-label="深度分析进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}">
+      <div class="track"><div class="fill" id="pbar-fill" style="width:${pct}%"></div></div><span class="pct" id="pbar-pct">${pct}%</span></div>`;
+  }
+  function updateBar(c) {
+    const pct = Math.round(analysisPct(c)), f = $("pbar-fill"), t = $("pbar-pct");
+    if (f) f.style.width = pct + "%";
+    if (t) t.textContent = pct + "%";
+    const bar = f && f.closest(".pbar");
+    if (bar) bar.setAttribute("aria-valuenow", String(pct));
+  }
+  function keywordPills(kw, hits) {
+    const langs = ["zh", "en", "fr"].filter((l) => kw && kw[l]);
+    if (!langs.length) return "";
+    return `<div class="kwlist">${langs.map((l) => `<div class="kw"><span class="lang">${LANG_NAME[l]}</span><span class="words">${esc(kw[l])}</span>${hits && hits[l] != null ? `<span class="n">${hits[l] ? `找到 ${hits[l]} 段` : "没找到"}</span>` : ""}</div>`).join("")}</div>`;
+  }
+
   function analysisSteps(c) {
-    const p = c.progress || { stage: "plan", done: 0, total: 1 };
-    const order = ["plan", "search", "write"], at = order.indexOf(p.stage);
+    const p = c.progress || { stage: "plan", done: 0, total: 1 }, info = c.info || {};
+    const order = ["plan", "keywords", "search", "write"];
+    let at = order.indexOf(p.stage);
+    if (p.stage === "search" && p.done >= p.total) at = 3;
+    if (at === 3 && !c.writeSince) c.writeSince = Date.now();
     const st = (i) => (i < at ? "done" : i === at ? "now" : "");
-    return `<ol class="steps" aria-label="进度">
-      ${step(st(0), "把问题拆成几个要分别查的方面", at === 0 ? "通常 5–15 秒" : "")}
-      ${step(st(1), `分方面查找资料${p.stage === "search" ? `（${p.done} / ${p.total}）` : ""}`, at > 1 && c.sources.length ? `找到 ${new Set(c.sources.map((s) => s.file)).size} 份资料，右侧可以先看` : "")}
-      ${step(st(2), "按方面写分析、综合结论并标注出处", at === 2 ? "需要读的资料较多，通常 20–40 秒后开始出字" : "")}</ol>${SKELETON}`;
+    const aspects = (info.aspects || []).length ? `拆成 ${info.aspects.length} 个方面：${info.aspects.map(esc).join("；")}` : "通常 5–15 秒";
+    const kwSub = info.keywords ? (Object.keys(info.keywords).length ? "" : "模型没给出关键词，只按原问题检索") : (at === 1 ? "通常 5–10 秒" : "");
+    const searchSub = p.stage === "search" && p.done < p.total && p.detail && p.detail.current ? `正在查：${esc(p.detail.current)}`
+      : (at > 2 && c.sources.length ? `送入 ${c.sources.length} 段（${new Set(c.sources.map((s) => s.file)).size} 份资料），右侧可以先看` : "");
+    return `${barHTML(c)}<ol class="steps" aria-label="进度">
+      ${step(st(0), "把问题拆成几个要分别查的方面", at === 0 ? "通常 5–15 秒" : aspects)}
+      ${step(st(1), "把关键词写成中文、英文、法文", kwSub)}
+      ${at >= 1 && info.keywords ? `<li class="kwrow">${keywordPills(info.keywords, info.lang_hits)}</li>` : ""}
+      ${step(st(2), `按方面、按语言查找全部资料${p.stage === "search" ? `（${Math.min(p.done, p.total)} / ${p.total}）` : ""}`, searchSub)}
+      ${step(st(3), "按方面写分析、综合结论并标注出处", at === 3 ? "需要读的资料较多，通常 20–40 秒后开始出字" : "")}</ol>${SKELETON}`;
   }
 
   function extractSteps(c) {
@@ -296,7 +347,7 @@
       const st = S.stats || { files: 0, chunks: 0 };
       if (!S.sources.length) {
         h += `<div class="welcome"><h1>先添加资料文件夹</h1>
-          <p>选一个放着 PDF、Word、PowerPoint（.pptx）或 Markdown 的文件夹，建好索引后就可以直接提问。文档内容不会离开这台电脑。</p>
+          <p>选一个放着 ${esc(FORMATS || "PDF、Word、PowerPoint、Markdown")} 文件的文件夹，建好索引后就可以直接提问。文档内容不会离开这台电脑。</p>
           <button type="button" class="btn primary" data-action="add">添加文件夹</button></div>`;
       } else {
         h += `<div class="welcome"><h1>问你的资料</h1>
@@ -340,6 +391,7 @@
         <li><span class="ic" aria-hidden="true"></span><span class="label">生成回答并标注出处</span></li></ol>
         <div class="skeleton" aria-hidden="true"><div style="width:92%"></div><div style="width:78%"></div><div style="width:54%"></div></div>`;
     } else if (c.phase === "streaming") {
+      if (c.kind === "analysis") h += barHTML(c);
       if (c.sources && c.sources.length) h += foundPills(c.sources);
       h += `<div class="answer" id="answer-live" aria-live="polite">${answerHTML(c.text, true)}</div>`;
     } else if (c.phase === "stopped") {
@@ -363,6 +415,9 @@
       ? `<div class="found"><span>按 ${r.context.length} 个部分汇总 · 点编号查看对应原文</span></div>` : foundPills(r.context);
     if (r.kind === "analysis" && (r.extra.aspects || []).length) {
       h += `<div class="aspects"><span>分 ${r.extra.aspects.length} 个方面分析：</span>${r.extra.aspects.map((a) => `<span class="pill">${esc(a)}</span>`).join("")}</div>`;
+    }
+    if (r.kind === "analysis" && r.extra.keywords && Object.keys(r.extra.keywords).length) {
+      h += `<details class="kwdone"><summary>三种语言的检索关键词</summary>${keywordPills(r.extra.keywords, r.extra.lang_hits)}</details>`;
     }
     h += `<div class="answer">${answerHTML(r.answer, false)}</div>`;
     const parts = [];
@@ -550,8 +605,16 @@
     } catch (e) {
       S.cur.phase = "error"; S.cur.error = String(e.message || e); setGenerating(false); renderQA();
     }
-    if (kind !== "qa") return;
     clearInterval(ticker);
+    if (kind === "analysis") {   // 等模型出字时进度条也慢慢往前走
+      ticker = setInterval(() => {
+        const c = S.cur;
+        if (!c || c.kind !== "analysis" || !["retrieving", "reading", "streaming"].includes(c.phase)) { clearInterval(ticker); return; }
+        updateBar(c);
+      }, 1000);
+      return;
+    }
+    if (kind !== "qa") return;
     ticker = setInterval(() => {
       const w = $("waited");
       if (!S.cur || S.cur.phase !== "reading") { if (!S.cur || S.cur.phase !== "retrieving") clearInterval(ticker); return; }
@@ -831,7 +894,7 @@
       <span class="grow"></span>
       ${lib.sources.length ? '<button type="button" class="btn" data-action="update-all">全部立即更新</button>' : ""}
       <button type="button" class="btn primary" data-action="add">添加文件夹</button></div>
-      <div class="drop" id="drop">把文件夹拖到这里添加 · 支持 PDF、Word、PowerPoint（.pptx）、Markdown</div>`;
+      <div class="drop" id="drop">把文件夹拖到这里添加 · 支持 <span id="drop-formats">${esc(FORMATS || "PDF、Word、PowerPoint、Markdown")}</span></div>`;
     if (!lib.sources.length) h += '<p class="sub">还没有添加文件夹。</p>';
     for (const s of lib.sources) {
       const name = s.path.split("/").filter(Boolean).pop() || s.path;
@@ -887,7 +950,6 @@
   }
 
   const REFRESH_LABEL = { daily: "每天自动更新", weekly: "每周自动更新", monthly: "每月自动更新", manual: "只手动更新" };
-  const SKIP_TYPES = [["pdf", "PDF", ["pdf"]], ["word", "Word", ["docx", "doc"]], ["ppt", "PowerPoint", ["pptx", "ppt"]], ["md", "Markdown", ["md"]]];
 
   function folderSettingsHTML(s, ocrOK) {
     const ex = s.exclude;

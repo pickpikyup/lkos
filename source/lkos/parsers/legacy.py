@@ -20,6 +20,7 @@ from lkos.types import Block
 class DocParser:
     extensions = (".doc",)
     file_type = "doc"
+    label = "Word"
 
     def parse(self, path: Path) -> Iterator[Block]:
         if sys.platform != "darwin":
@@ -42,6 +43,8 @@ class DocParser:
 class PptParser:
     extensions = (".ppt",)
     file_type = "ppt"
+    label = "PowerPoint"
+    supported = False       # 只识别、不解析：跳过并提示另存为 .pptx
 
     def parse(self, path: Path) -> Iterator[Block]:
         raise UnsupportedFileError("旧版 .ppt：请用 WPS 或 Keynote 另存为 .pptx，下次更新时会自动索引")

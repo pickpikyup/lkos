@@ -25,6 +25,7 @@ from typing import Callable
 from lkos.app import App
 from lkos.errors import Cancelled, LkosError
 from lkos.evaluation.evaluate import is_not_found
+from lkos.parsers.base import file_type_groups
 from lkos.parsers.ocr import available as ocr_available
 from lkos.daemon import app_lock, index_lock, wait_for_index_lock
 from lkos import daemon as daemon_mod
@@ -356,7 +357,8 @@ class Bridge:
                               "chunks": s["chunks_total"]},
                     "models": models, "model": self._app.cfg.tasks["knowledge_qa"].default_model,
                     "history": self._app.repo.list_history(), "sources": self._app.repo.list_sources(),
-                    "index": self._indexer.state, "settings": dict(self._settings)}
+                    "index": self._indexer.state, "settings": dict(self._settings),
+                    "file_types": file_type_groups(list(self._app.cfg.indexing.extensions))}
         out = self._call(run)
         for m in out["models"]:
             (log.info if m["ok"] else log.warning)("模型 %s：%s", m["ref"], m["message"] or ("就绪" if m["ok"] else "不可用"))
@@ -392,9 +394,10 @@ class Bridge:
             self._emit({"type": "sources", "qid": qid, "ms": int((time.perf_counter() - t0) * 1000),
                         "sources": [chunk_dict(i, c) for i, c in enumerate(ctx, start=1)]})
 
-        def on_progress(stage: str, done: int, total: int) -> None:
-            log.debug("进度：%s %d/%d", stage, done, total)
-            self._emit({"type": "progress", "qid": qid, "stage": stage, "done": done, "total": total})
+        def on_progress(stage: str, done: int, total: int, detail: dict | None = None) -> None:
+            log.debug("进度：%s %d/%d%s", stage, done, total, f" {detail}" if detail else "")
+            self._emit({"type": "progress", "qid": qid, "stage": stage, "done": done, "total": total,
+                        "detail": detail or {}})
 
         def on_token(t: str) -> None:
             if self._cancel.is_set():
@@ -468,11 +471,12 @@ class Bridge:
 
         def work(cb, t0):
             log.info("深度分析：%s", question)
-            ans, aspects = self._app.analyzer.analyze(question, scope=Scope.from_dict(scope), **cb)
+            ans, aspects, info = self._app.analyzer.analyze(question, scope=Scope.from_dict(scope), **cb)
             log.info("拆分的方面：%s", "；".join(aspects))
+            log.info("各语言关键词：%s；命中 %s", info["keywords"] or "（模型没给出）", info["lang_hits"])
             ans.latency_ms = int((time.perf_counter() - t0) * 1000)
             return self._save(f"分析：{question}", ans, kind="analysis",
-                              extra={"aspects": aspects, "scope": scope or {}, "query": question})
+                              extra={"aspects": aspects, "scope": scope or {}, "query": question, **info})
         return self._start("a", work)
 
     def extract(self, request: str, path: str | None = None, scope: dict | None = None) -> dict:
