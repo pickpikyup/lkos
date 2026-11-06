@@ -63,6 +63,6 @@ source/scripts/test.sh --live   # 加上真实模型测试
 
 命令行还有：`lkos source set`（文件夹设置）、`lkos tags list / auto`（标签）、`lkos daemon install / uninstall / status`（后台服务）。
 
-**目前的限制**：加密文件、旧版 .ppt 会被跳过，资料库页会列出这些文件和处理办法（旧版 .doc 用 macOS 自带工具自动转换）；扫描件要在文件夹设置里打开“文字识别”才会被检索；本机模型的上下文只有 4K，长对话只带最近 3 轮；PDF 还不能直接跳到引用的那一页；远端模型只保留接口、默认关闭。
+**目前的限制**：加密文件、旧版 .ppt 会被跳过，资料库页会列出这些文件和处理办法（旧版 .doc 用 macOS 自带工具自动转换）；扫描件要在文件夹设置里打开“文字识别”才会被检索；本机模型的上下文只有 4K，长对话只带最近 3 轮；PDF 还不能直接跳到引用的那一页；在线模型的密钥目前明文保存在 data/models.json。
 
 **评测**：双击 `source/scripts/run_eval.command`，用 `data/eval/` 里的题目评测当前版本并和上次对比（约 15–20 分钟）。
