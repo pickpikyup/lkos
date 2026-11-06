@@ -45,39 +45,32 @@
   </nav>
 
   <main class="main" id="view-qa">
+    <header class="thread-head" id="thread-head" hidden></header>
     <div class="main-scroll" id="main-scroll">
       <div class="col" id="qa-col"></div>
     </div>
     <div class="composer-wrap" id="composer-wrap">
-      <div class="picker" id="picker" hidden></div>
+      <div class="pop picker" id="picker" hidden></div>
+      <div class="pop scope-pop" id="scope-pop" role="dialog" aria-label="限定范围" hidden></div>
+      <div class="pop menu" id="plus-menu" role="menu" aria-label="添加" hidden></div>
+      <div class="pop menu" id="mode-menu" role="menu" aria-label="方式" hidden></div>
+      <div class="pop menu right" id="model-menu" role="menu" aria-label="回答用的模型" hidden></div>
       <form class="composer" id="composer">
         <div class="composer-top" id="composer-top" hidden></div>
-        <label for="q" class="sr-only">问题</label>
-        <textarea id="q" rows="2" placeholder="问一个关于你资料的问题，⌘↩ 发送"></textarea>
+        <label for="q" class="sr-only">输入</label>
+        <textarea id="q" rows="2" placeholder="和模型直接对话，⌘↩ 发送"></textarea>
         <div class="row">
-          <div class="seg" role="group" aria-label="模式">
-            <button type="button" data-mode="chat" aria-pressed="false">对话</button>
-            <button type="button" data-mode="search" aria-pressed="false">关键词检索</button>
-            <button type="button" data-mode="qa" aria-pressed="true">分析</button>
-            <button type="button" data-mode="analysis" aria-pressed="false">深度分析</button>
-          </div>
-          <span class="model-wrap" id="model-wrap">
-            <label for="model-select" class="sr-only">回答用的模型</label>
-            <select id="model-select" class="model-select"></select>
-          </span>
-          <button type="button" class="icon-btn" id="attach-btn" aria-label="附加文件" title="附加文件（也可以输入 @）">
-            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 7.5l-5.3 5.3a3.2 3.2 0 01-4.5-4.5l5.6-5.6a2.1 2.1 0 013 3L6.2 11.3a1 1 0 01-1.5-1.5L9.8 4.7"/></svg>
+          <button type="button" class="icon-btn" id="plus-btn" aria-label="添加文件或限定范围" aria-haspopup="menu" aria-expanded="false" title="附加文件、限定范围">
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
           </button>
-          <div class="scope-wrap" id="scope-wrap">
-            <button type="button" class="scope-btn" id="scope-btn" aria-expanded="false" aria-controls="scope-pop">
-              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></svg>
-              <span id="scope-label">全部资料</span>
-            </button>
-            <div class="scope-pop" id="scope-pop" role="dialog" aria-label="限定范围" hidden></div>
-          </div>
+          <button type="button" class="cbtn" id="mode-btn" aria-haspopup="menu" aria-expanded="false">
+            <span id="mode-label">对话</span><svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4l2.5 2.5L7.5 4"/></svg>
+          </button>
           <span class="grow"></span>
-          <span class="hint" id="send-hint">⌘↩ 发送 · ↩ 换行</span>
-          <button type="submit" class="send" aria-label="发送">
+          <button type="button" class="cbtn" id="model-btn" aria-haspopup="menu" aria-expanded="false">
+            <span class="dot" aria-hidden="true"></span><span id="model-label">本机模型</span><svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4l2.5 2.5L7.5 4"/></svg>
+          </button>
+          <button type="submit" class="send" aria-label="发送（⌘↩）" title="发送（⌘↩）">
             <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M4 7l4-4 4 4"/></svg>
           </button>
         </div>

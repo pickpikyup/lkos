@@ -9,7 +9,7 @@
     settings: { dev_mode: false },
     scope: { source_ids: [], file_types: [], days: 0, path: null, tags: [] }, scopeOpen: false, tags: [],
     thread: null, selTurn: null, choices: [], modelRef: "", attach: [], picker: null, autoKeyword: {},
-    mcfg: null, modelEdit: null, modelList: null, consentOk: null,
+    mcfg: null, modelEdit: null, modelList: null, consentOk: null, menu: null,
     log: { tab: "run", after: 0, lines: [], level: "DEBUG", filter: "", file: "", warn: 0, calls: [] },
   };
   const $ = (id) => document.getElementById(id);
@@ -232,10 +232,8 @@
   }
 
   function renderScope() {
-    const sc = S.scope, d = scopeDict();
-    $("scope-label").textContent = "范围：" + scopeText(d);
-    $("scope-btn").classList.toggle("on", !!d);
-    $("scope-btn").setAttribute("aria-expanded", String(S.scopeOpen));
+    const sc = S.scope;
+    renderComposerTop();
     const pop = $("scope-pop");
     pop.hidden = !S.scopeOpen;
     if (!S.scopeOpen) return;
@@ -251,7 +249,7 @@
         <div class="hint">不勾选表示不限。想只问一份文件：在右侧出处里点“只问这份文件”。</div>`;
     }
     h += `<div class="foot"><button type="button" class="btn small" data-scope-reset="1">恢复全部资料</button><button type="button" class="btn small primary" data-scope-close="1">完成</button></div>`;
-    pop.innerHTML = h;
+    pop.innerHTML = `<div class="pop-head">限定范围<span class="hint">只在这些资料里查找</span></div>` + h;
   }
 
   function setScopeFile(path) {
@@ -381,16 +379,16 @@
     const turns = S.thread ? S.thread.turns : [];
     if (!turns.length && !S.cur) {
       col.innerHTML = h + welcomeHTML();
-      renderComposerTop();
+      renderComposerTop(); renderThreadHead();
       return;
     }
     if (S.thread && turns.length && turns[0].branch_of) {
-      h += `<div class="branch-note">分支对话：保留了原对话到这一轮为止的内容，之后的提问只在这里继续。</div>`;
+      h += `<div class="branch-note">分支对话：保留了原对话到这一轮为止的内容，之后的提问只在这里继续。原对话不受影响。</div>`;
     }
     for (const r of turns) h += `<article class="turn${String(S.selTurn) === String(r.id) ? " sel" : ""}" data-turn-id="${r.id}">${turnHTML(r)}</article>`;
     if (S.cur) h += `<article class="turn current${S.selTurn === "cur" ? " sel" : ""}">${curHTML(S.cur)}</article>`;
     col.innerHTML = h;
-    renderComposerTop();
+    renderComposerTop(); renderThreadHead();
   }
 
   function turnHTML(r) {
@@ -638,38 +636,88 @@
   }
 
   function renderModelSelect() {
-    const sel = $("model-select");
-    if (!sel) return;
     if (!S.choices.some((c) => c.ref === S.modelRef)) S.modelRef = S.choices.length ? S.choices[0].ref : "";
-    const local = S.choices.filter((c) => !c.online), online = S.choices.filter((c) => c.online);
-    sel.innerHTML = `<optgroup label="本机（不联网）">${local.map((c) => `<option value="${esc(c.ref)}">${esc(c.name)}</option>`).join("")}</optgroup>` +
-      (online.length ? `<optgroup label="在线">${online.map((c) => `<option value="${esc(c.ref)}">${esc(c.name)}</option>`).join("")}</optgroup>` : "") +
-      `<option value="__config">配置模型…</option>`;
-    sel.value = S.modelRef;
-    $("model-wrap").hidden = S.mode === "search";
-    $("scope-wrap").hidden = S.mode === "chat";
-    $("model-wrap").classList.toggle("online", !!(currentChoice() && currentChoice().online));
+    const c = currentChoice(), btn = $("model-btn");
+    $("model-label").textContent = c ? c.name : "没有可用的模型";
+    btn.classList.toggle("online", !!(c && c.online));
+    btn.title = c ? `${c.name}（${c.online ? "在线" : "本机，不联网"}）· 点击切换模型` : "";
+    btn.hidden = S.mode === "search";
+    if (S.menu === "model") renderMenu();
+  }
+
+  // ---------------- 弹出菜单（+ / 方式 / 模型），参考 Claude Code：输入框只留最少的控件 ----------------
+  const MODES = [
+    ["chat", "对话", "直接和模型聊，不查资料库"],
+    ["search", "关键词检索", "按原文逐字查找，列出文件和位置，不用模型"],
+    ["qa", "分析", "理解问题后找资料，写出带出处的回答"],
+    ["analysis", "深度分析", "拆解问题、中英法分别检索全部资料、按方面分析"],
+  ];
+  const CHECK = '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-7"/></svg>';
+  function openMenu(name) {
+    S.scopeOpen = false; renderScope(); closePicker();
+    S.menu = S.menu === name ? null : name;
+    renderMenu();
+  }
+  function closeMenu() { if (S.menu) { S.menu = null; renderMenu(); } }
+  function renderMenu() {
+    for (const n of ["plus", "mode", "model"]) {
+      $(n + "-menu").hidden = S.menu !== n;
+      $(n + "-btn").setAttribute("aria-expanded", String(S.menu === n));
+    }
+    if (!S.menu) return;
+    const box = $(S.menu + "-menu");
+    if (S.menu === "mode") {
+      box.innerHTML = MODES.map(([id, name, desc]) => `<button type="button" class="mi" role="menuitemradio" aria-checked="${S.mode === id}" data-pick-mode="${id}">
+        <span class="mi-t">${name}<span class="mi-d">${desc}</span></span><span class="mi-c">${S.mode === id ? CHECK : ""}</span></button>`).join("");
+    } else if (S.menu === "model") {
+      const item = (c) => `<button type="button" class="mi" role="menuitemradio" aria-checked="${c.ref === S.modelRef}" data-pick-model="${esc(c.ref)}">
+        <span class="mi-t">${esc(c.name)}<span class="mi-d">${c.online ? esc(c.service.replace(/^https?:\/\//, "")) : "本机 · 不联网"}${c.context_window ? ` · 上下文 ${fmt(Math.round(c.context_window / 1000))}k` : ""}</span></span>
+        <span class="mi-c">${c.ref === S.modelRef ? CHECK : ""}</span></button>`;
+      const local = S.choices.filter((c) => !c.online), online = S.choices.filter((c) => c.online);
+      box.innerHTML = `<div class="mg">本机</div>${local.map(item).join("")}` +
+        (online.length ? `<div class="mg">在线</div>${online.map(item).join("")}` : "") +
+        `<div class="msep"></div><button type="button" class="mi" role="menuitem" data-menu-go="models"><span class="mi-t">配置模型…<span class="mi-d">添加在线模型、更换本机模型</span></span></button>`;
+    } else {
+      const noFiles = S.mode === "search" || S.mode === "chat", noScope = S.mode === "chat";
+      box.innerHTML = `<button type="button" class="mi" role="menuitem" data-menu-attach="1"${noFiles ? " disabled" : ""}>
+          <span class="mi-t">附加文件…<span class="mi-d">${noFiles ? "在“分析”“深度分析”里可用" : "也可以在输入框里输入 @"}</span></span><span class="kbd">@</span></button>
+        <button type="button" class="mi" role="menuitem" data-menu-scope="1"${noScope ? " disabled" : ""}>
+          <span class="mi-t">限定范围…<span class="mi-d">${noScope ? "对话模式不查资料库" : "文件夹、文件类型、标签、修改时间"}</span></span></button>`;
+    }
+  }
+
+  // 对话标题栏（中间栏顶部）：标题、轮数、新对话
+  function renderThreadHead() {
+    const head = $("thread-head"), turns = S.thread ? S.thread.turns : [];
+    if (!turns.length) { head.hidden = true; head.innerHTML = ""; return; }
+    const title = turns[0].question.replace(/^(分析|提取)：/, "");
+    head.hidden = false;
+    head.innerHTML = `<div class="th-title" title="${esc(title)}">${turns[0].branch_of ? '<span class="th-branch">分支</span>' : ""}${esc(title)}</div>
+      <span class="th-meta">${turns.length} 轮</span>
+      <button type="button" class="btn small" data-action="new" title="新对话（⌘N）">新对话</button>`;
   }
 
   // 输入框上方：继续对话 / 附加的文件 / 在线发送提示
   function renderComposerTop() {
     const top = $("composer-top");
     if (!top) return;
-    const parts = [];
+    const parts = [], chips = [];
     const turns = S.thread ? S.thread.turns : [];
-    if (turns.length) {
-      const first = turns[0].question.replace(/^(分析|提取)：/, "");
-      parts.push(`<div class="ctx-chip"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 4h10M3 8h7M3 12h4"/></svg>
-        <span>继续对话：${esc(first)} · 已 ${turns.length} 轮</span><button type="button" class="link" data-action="new">新对话 ⌘N</button></div>`);
+    const sd = scopeDict();
+    if (sd && S.mode !== "chat") {
+      chips.push(`<span class="att scope"><button type="button" class="att-main" data-open-scope="1" title="修改范围">
+        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2.5 4h11M4.5 8h7M6.5 12h3"/></svg>${esc(scopeText(sd))}</button>
+        <button type="button" data-scope-reset="1" aria-label="取消范围限制">×</button></span>`);
     }
-    if (S.attach.length && S.mode !== "chat") {
-      parts.push(`<div class="attach-row">${S.attach.map((f, i) => `<span class="att${S.mode !== "search" && currentChoice() && currentChoice().online && !f.online_ok ? " blocked" : ""}" title="${esc(f.path)}">
+    if (S.attach.length && S.mode !== "chat" && S.mode !== "search") {
+      chips.push(`${S.attach.map((f, i) => `<span class="att${S.mode !== "search" && currentChoice() && currentChoice().online && !f.online_ok ? " blocked" : ""}" title="${esc(f.path)}">
         <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 2h5l3 3v9H4z"/></svg>${esc(f.name)}
-        <span class="tk">约 ${fmt(Math.round(f.tokens / 1000) || 1)}k</span><button type="button" data-unattach="${i}" aria-label="去掉 ${esc(f.name)}">×</button></span>`).join("")}</div>`);
+        <span class="tk">约 ${fmt(Math.round(f.tokens / 1000) || 1)}k</span><button type="button" data-unattach="${i}" aria-label="去掉 ${esc(f.name)}">×</button></span>`).join("")}`);
     }
+    if (chips.length) parts.push(`<div class="attach-row">${chips.join("")}</div>`);
     const c = currentChoice();
     if (S.mode === "chat" && c && c.online) {
-      parts.push(`<div class="online-note"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/></svg>
+      parts.push(`<div class="online-note" title="点模型按钮可以换回本机模型"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/></svg>
         <span>在线：你的问题${turns.length ? "和这个对话的记录" : ""}会发送到 ${esc(c.name)}；对话模式不发送资料库里的内容</span></div>`);
     } else if (S.mode !== "search" && c && c.online) {
       const tk = S.attach.reduce((s, f) => s + f.tokens, 0);
@@ -792,10 +840,10 @@
   function setMode(mode) {
     S.mode = mode;
     try { localStorage.setItem("lkos.mode", mode); } catch (e) { /* 忽略 */ }
-    document.querySelectorAll(".composer .seg button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === mode)));
+    $("mode-label").textContent = (MODES.find((m) => m[0] === mode) || MODES[0])[1];
     $("q").placeholder = PLACEHOLDER[mode] || PLACEHOLDER.qa;
-    $("attach-btn").hidden = mode === "search" || mode === "chat";
-    renderModelSelect(); renderComposerTop();
+    if (mode === "chat") S.scopeOpen = false;
+    closeMenu(); renderModelSelect(); renderComposerTop(); renderScope();
     $("q").focus();
   }
 
@@ -1438,6 +1486,15 @@
       showView("qa"); renderScope(); toast(`接下来只在标签“${d.tagFilter}”的文件里找`); $("q").focus(); return;
     }
     if (d.genTags != null) { const r = await api("generate_tags", d.genTags); toast(r.ok ? "开始生成标签" : "已经在生成了"); return; }
+    if (d.pickMode) { setMode(d.pickMode); try { localStorage.setItem("lkos.mode", d.pickMode); } catch (err) { /* 忽略 */ } return; }
+    if (d.pickModel) {
+      S.modelRef = d.pickModel; closeMenu();
+      try { localStorage.setItem("lkos.model", S.modelRef); } catch (err) { /* 忽略 */ }
+      renderModelSelect(); renderComposerTop(); $("q").focus(); return;
+    }
+    if (d.menuGo) { closeMenu(); return showView(d.menuGo); }
+    if (d.menuAttach) { closeMenu(); return openPicker("", false); }
+    if (d.menuScope || d.openScope) return openScope();
     if (d.scopeReset) { S.scope = { source_ids: [], file_types: [], days: 0, path: null, tags: [] }; return renderScope(); }
     if (d.scopeClose) { S.scopeOpen = false; renderScope(); $("q").focus(); return; }
     if (d.scopeClearFile) { S.scope.path = null; return renderScope(); }
@@ -1470,13 +1527,9 @@
     const btn = $("confirm-send").querySelector("[data-cf-send]");
     if (btn) btn.textContent = `发送 ${S.cur.confirm.keep.size} 段`;
   });
-  $("model-select").addEventListener("change", (e) => {
-    if (e.target.value === "__config") { e.target.value = S.modelRef; return showView("models"); }
-    S.modelRef = e.target.value;
-    try { localStorage.setItem("lkos.model", S.modelRef); } catch (err) { /* 忽略 */ }
-    renderModelSelect(); renderComposerTop();
-  });
-  $("attach-btn").addEventListener("click", () => (S.picker ? closePicker() : openPicker("", false)));
+  $("plus-btn").addEventListener("click", () => openMenu("plus"));
+  $("mode-btn").addEventListener("click", () => openMenu("mode"));
+  $("model-btn").addEventListener("click", () => openMenu("model"));
   $("btn-models").addEventListener("click", () => showView("models"));
   $("btn-settings").addEventListener("click", () => showView("settings"));
   $("btn-logs").addEventListener("click", () => showView("logs"));
@@ -1495,11 +1548,12 @@
   $("btn-new").addEventListener("click", newQuestion);
   $("btn-add-side").addEventListener("click", addFolder);
   $("btn-stop").addEventListener("click", () => api("stop"));
-  document.querySelectorAll(".composer .seg button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
-  $("scope-btn").addEventListener("click", async () => {
-    S.scopeOpen = !S.scopeOpen; renderScope();
-    if (S.scopeOpen) { try { S.tags = await api("tags", 40); } catch (e) { /* 忽略 */ } renderScope(); }
-  });
+  async function openScope() {
+    closeMenu(); closePicker();
+    S.scopeOpen = true; renderScope();
+    try { S.tags = await api("tags", 40); } catch (e) { /* 忽略 */ }
+    renderScope();
+  }
   $("scope-pop").addEventListener("change", (e) => {
     const t = e.target, d = t.dataset, sc = S.scope;
     const toggle = (arr, v) => { const i = arr.indexOf(v); if (t.checked && i < 0) arr.push(v); if (!t.checked && i >= 0) arr.splice(i, 1); };
@@ -1510,8 +1564,9 @@
     renderScope();
   });
   document.addEventListener("mousedown", (e) => {
-    if (S.scopeOpen && !e.target.closest(".scope-wrap")) { S.scopeOpen = false; renderScope(); }
-    if (S.picker && !e.target.closest("#picker") && !e.target.closest("#attach-btn") && e.target.id !== "q") closePicker();
+    if (S.scopeOpen && !e.target.closest("#scope-pop") && !e.target.closest("[data-open-scope]") && !e.target.closest("[data-menu-scope]")) { S.scopeOpen = false; renderScope(); }
+    if (S.picker && !e.target.closest("#picker") && !e.target.closest("[data-menu-attach]") && e.target.id !== "q") closePicker();
+    if (S.menu && !e.target.closest(".menu") && !e.target.closest("#" + S.menu + "-btn")) closeMenu();
   });
   $("composer").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
   $("aside").addEventListener("submit", async (e) => {
@@ -1547,7 +1602,8 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !$("consent").hidden) { $("consent").hidden = true; S.consentOk = null; return; }
     if (e.key === "Escape" && S.picker && !imeActive(e)) { closePicker(); $("q").focus(); return; }
-    if (e.key === "Escape" && S.scopeOpen && !imeActive(e)) { S.scopeOpen = false; renderScope(); $("scope-btn").focus(); return; }
+    if (e.key === "Escape" && S.menu && !imeActive(e)) { const b = $(S.menu + "-btn"); closeMenu(); b.focus(); return; }
+    if (e.key === "Escape" && S.scopeOpen && !imeActive(e)) { S.scopeOpen = false; renderScope(); $("q").focus(); return; }
     if (e.key === "Escape" && !$("generating").hidden) {
       if (imeActive(e)) return;   // 输入法里按 Esc 取消候选词，不是要停止生成
       api("stop"); return;
