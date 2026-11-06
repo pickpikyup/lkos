@@ -76,7 +76,7 @@ def test_split_model_ref_rejects_bad(bad):
 
 def test_unknown_provider_type_rejected():
     with pytest.raises(ConfigError, match="不支持"):
-        load_config(None, overrides={"providers": {"x": {"type": "openai"}}})
+        load_config(None, overrides={"providers": {"x": {"type": "grpc"}}})
 
 
 def test_task_referencing_undefined_provider_rejected():

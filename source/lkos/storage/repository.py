@@ -458,6 +458,27 @@ class Repository:
         rows = self.conn.execute(f"SELECT id, file_id FROM chunks WHERE id IN ({marks})", list(chunk_ids)).fetchall()
         return {r["id"]: r["file_id"] for r in rows}
 
+    # ---------- 更换向量模型 ----------
+    def reset_embeddings(self, model_ref: str, dim: int, keep_source_ids: Sequence[int]) -> None:
+        """换了向量模型：旧向量全部作废。清空文件、文本块、向量、全文索引和标签（问答记录保留），
+        按新维度重建向量表；只保留 keep_source_ids 里的文件夹（及其设置），之后重新索引。"""
+        if int(dim) <= 0 or int(dim) % 8:
+            raise ValueError("向量维度必须是 8 的倍数")
+        keep = {int(x) for x in keep_source_ids}
+        with self.transaction():
+            for table in ("file_tags", "chunks_fts", "chunks", "files", "vectors", "index_runs"):
+                self.conn.execute(f"DELETE FROM {table}")
+            self.conn.execute("DROP TABLE IF EXISTS chunks_vec")
+            self.conn.execute(f"""CREATE VIRTUAL TABLE chunks_vec USING vec0(
+                chunk_id INTEGER PRIMARY KEY, lang TEXT, embedding BIT[{int(dim)}])""")
+            self.conn.execute("DELETE FROM index_meta WHERE key LIKE 'chunker:%' OR key LIKE 'rechunk:%' "
+                              "OR key LIKE 'ocr:%'")
+            for sid in [r["id"] for r in self.conn.execute("SELECT id FROM sources")]:
+                if sid not in keep:
+                    self.conn.execute("DELETE FROM sources WHERE id = ?", (sid,))
+            self.set_meta("embedding_model", model_ref)
+            self.set_meta("embedding_dim", str(int(dim)))
+
     # ---------- 标签 ----------
     def all_tags(self, limit: int = 200) -> list[dict]:
         """所有标签及使用它的文件数，常用的在前。"""

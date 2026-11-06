@@ -51,7 +51,7 @@ def test_manual_override_wins():
 
 
 @pytest.mark.parametrize("privacy,match", [
-    ({"remote_enabled": False, "offline_mode": False}, "未开启"),
+    ({"remote_enabled": False, "offline_mode": False}, "没有启用"),
     ({"remote_enabled": True, "offline_mode": True}, "离线模式"),
 ])
 def test_remote_model_blocked_by_privacy(privacy, match):

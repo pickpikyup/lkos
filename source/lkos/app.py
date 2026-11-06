@@ -5,11 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from lkos.config import Config, default_home, load_config
+from lkos.config import Config, deep_merge, default_home, load_config
 from lkos.gateway.gateway import ModelGateway
 from lkos.indexing import tokenize
 from lkos.indexing.indexer import Indexer
 from lkos.indexing.scheduler import ActivityMarker, GateConfig, IndexGate
+from lkos.models_config import load_models, to_overrides
 from lkos.qa.service import QAService
 from lkos.qa.summarize import Summarizer
 from lkos.qa.extract import Extractor
@@ -44,7 +45,9 @@ class App:
         home = Path(home).expanduser().resolve() if home else default_home()
         home.mkdir(parents=True, exist_ok=True)
         tokenize.set_cache_dir(home / "cache")
-        cfg = load_config(config_path or home / CONFIG_NAME, overrides=overrides)
+        mc = load_models(home)   # 界面“模型”页的配置（在线 / 本机 / 向量模型）
+        merged = deep_merge(to_overrides(mc), overrides or {}) if mc else overrides
+        cfg = load_config(config_path or home / CONFIG_NAME, overrides=merged)
         conn = connect(home / DB_NAME)
         try:
             init_schema(conn, cfg.embedding.ref, cfg.embedding.dim)

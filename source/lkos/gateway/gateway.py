@@ -2,7 +2,7 @@
 
 规则（需求文档第 3、8 节）：
 1. 模型解析：本次请求的 override 优先，否则用任务默认模型；
-2. 远端模型在 remote_enabled=false 或 offline_mode=true 时被拒绝；
+2. 远端（在线）模型在 remote_enabled=false 或 offline_mode=true 时被拒绝（在线模型在界面“模型”页配置）；
 3. 调用失败直接抛出 ModelUnavailableError，绝不自动换模型（尤其不回退到远端）；
 4. 无论成功失败都写调用日志。
 """
@@ -44,6 +44,12 @@ def build_provider(pc: ProviderConfig, embedding_dim: int, transport=None):
             keep_alive=str(opts.get("keep_alive", "30m")), timeout_s=float(opts.get("timeout_s", 120)),
             transport=transport,
         )
+    if pc.type in ("anthropic", "openai"):
+        from lkos.gateway.online import AnthropicProvider, OpenAICompatProvider
+
+        cls = AnthropicProvider if pc.type == "anthropic" else OpenAICompatProvider
+        return cls(pc.name, base_url=opts.get("base_url") or "", api_key=opts.get("api_key") or "",
+                   timeout_s=float(opts.get("timeout_s", 120)), transport=transport)
     if pc.type == "hermes":
         from lkos.gateway.hermes import HermesProvider
 
@@ -87,9 +93,9 @@ class ModelGateway:
             raise ConfigError(f"未定义的 provider：{provider_name}")
         if pc.is_remote:
             if self.cfg.privacy.offline_mode:
-                raise RemoteDisabledError("离线模式已开启，禁止调用远端模型。")
+                raise RemoteDisabledError("离线模式已开启，不能使用在线模型（在左栏“模型”里可以关闭离线模式）。")
             if not self.cfg.privacy.remote_enabled:
-                raise RemoteDisabledError("远端调用未开启（privacy.remote_enabled=false）。")
+                raise RemoteDisabledError("在线模型没有启用：请在左栏“模型”里配置并启用。")
 
     # ---------- chat ----------
     def chat(self, task: str, messages: list[dict], model_override: str | None = None,
@@ -104,7 +110,7 @@ class ModelGateway:
         tcfg = self.cfg.tasks.get(task)
         opts = ChatOptions(
             temperature=tcfg.temperature if tcfg else 0.3,
-            max_tokens=max_tokens or (tcfg.max_tokens if tcfg else 1024),
+            max_tokens=max_tokens or mcfg.max_output or (tcfg.max_tokens if tcfg else 1024),
             num_ctx=mcfg.context_window,
             think=mcfg.think,
         )

@@ -26,6 +26,7 @@ from lkos.app import App
 from lkos.errors import Cancelled, LkosError
 from lkos.evaluation.evaluate import is_not_found
 from lkos.parsers.base import file_type_groups
+from lkos.ui.models_api import ModelsMixin
 from lkos.parsers.ocr import available as ocr_available
 from lkos.daemon import app_lock, index_lock, wait_for_index_lock
 from lkos import daemon as daemon_mod
@@ -298,13 +299,15 @@ class IndexWorker:
             self.enqueue(folder, background=True, kind="tags")
 
 
-class Bridge:
+class Bridge(ModelsMixin):
     """暴露给前端的方法。"""
 
     def __init__(self, home: Path | None = None, config_path: Path | None = None, overrides: dict | None = None,
                  providers: dict | None = None, opener: Callable[..., str | None] = system_open,
                  auto_refresh: bool = True):
         kw = dict(home=home, config_path=config_path, overrides=overrides, providers=providers)
+        self._kw = kw
+        self._auto_refresh = auto_refresh
         self._window = None
         self._opener = opener
         self._qa = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lkos-qa")
@@ -340,6 +343,19 @@ class Bridge:
 
     def _call(self, fn):
         return self._qa.submit(fn).result()
+
+    def _reload_app(self) -> None:
+        """模型配置变了：在问答线程里重新打开（读取新的 models.json）。"""
+        def run():
+            self._app.close()
+            self._app = App.open(**self._kw)
+        self._call(run)
+
+    def _restart_indexer(self) -> None:
+        self._indexer.shutdown()
+        self._indexer._thread.join(10)
+        self._indexer = IndexWorker(lambda: App.open(**self._kw), self._emit, auto_refresh=self._auto_refresh,
+                                    home=self._app.home, auto_tags=lambda: bool(self._settings.get("auto_tags")))
 
     def _close(self) -> None:
         self._applock.release()

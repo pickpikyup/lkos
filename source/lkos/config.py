@@ -13,8 +13,8 @@ import yaml
 
 from lkos.errors import ConfigError
 
-KNOWN_PROVIDER_TYPES = {"ollama", "hermes", "fake"}
-REMOTE_PROVIDER_TYPES = {"hermes"}
+KNOWN_PROVIDER_TYPES = {"ollama", "hermes", "fake", "anthropic", "openai"}
+REMOTE_PROVIDER_TYPES = {"hermes", "anthropic", "openai"}
 
 
 def project_root() -> Path:
@@ -50,6 +50,7 @@ class ChatModelConfig:
     ref: str
     context_window: int = 8192
     think: bool = False
+    max_output: int | None = None     # 在线模型：没有指定输出上限时用它（本机模型用任务的 max_tokens）
 
 
 @dataclass
@@ -180,6 +181,7 @@ def parse_config(raw: dict) -> Config:
                 ref=ref,
                 context_window=int((v or {}).get("context_window", 8192)),
                 think=bool((v or {}).get("think", False)),
+                max_output=None if (v or {}).get("max_output") is None else int(v["max_output"]),
             )
             for ref, v in (models.get("chat") or {}).items()
         }
