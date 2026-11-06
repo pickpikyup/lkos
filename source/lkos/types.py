@@ -152,10 +152,11 @@ class Scope:
     since: float | None = None
     path: str | None = None            # 只在这一个文件里找
     tags: list[str] | None = None
+    paths: list[str] | None = None     # 只在这几个文件里找（附加的文件）
 
     @property
     def empty(self) -> bool:
-        return not (self.source_ids or self.file_types or self.since or self.path or self.tags)
+        return not (self.source_ids or self.file_types or self.since or self.path or self.tags or self.paths)
 
     @classmethod
     def from_dict(cls, d: dict | None) -> "Scope":
@@ -164,4 +165,5 @@ class Scope:
                    file_types=[str(x) for x in d.get("file_types") or []] or None,
                    since=float(d["since"]) if d.get("since") else None,
                    path=d.get("path") or None,
-                   tags=[str(x) for x in d.get("tags") or []] or None)
+                   tags=[str(x) for x in d.get("tags") or []] or None,
+                   paths=[str(x) for x in d.get("paths") or []] or None)

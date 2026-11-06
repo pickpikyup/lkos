@@ -8,7 +8,8 @@ from lkos.config import Config
 from lkos.gateway.base import TokenCallback
 from lkos.indexing.language import detect_lang
 from lkos.qa.citations import validate_citations
-from lkos.qa.prompt import NO_CONTEXT_MESSAGE, build_messages, fit_context, history_tokens, lang_key
+from lkos.qa.history import Turn, history_messages, messages_tokens, prior_chunks
+from lkos.qa.prompt import NO_CONTEXT_MESSAGE, build_messages, fit_context, lang_key
 from lkos.retrieval.select import merge_adjacent
 from lkos.types import Answer, RetrievedChunk
 
@@ -25,6 +26,9 @@ def answer_lang(question: str, cfg=None) -> str:
     return detect_lang(question)
 
 
+ONLINE_TOP_K = 12   # 在线模型一次检索的片段数（本机模型按 retrieval.top_k）
+
+
 class QAService:
     def __init__(self, cfg: Config, retriever, gateway, marker=None):
         self.cfg = cfg
@@ -35,41 +39,60 @@ class QAService:
     def ask(self, question: str, k: int | None = None, model_override: str | None = None,
             lang: str | None = "auto", on_token: TokenCallback | None = None,
             mode: str | None = None, strategy: str | None = None, on_context=None, scope=None,
-            history: list[tuple[str, str]] | None = None) -> Answer:
-        """on_context(片段列表)：片段选好、开始生成之前调用，界面据此先显示找到的资料。"""
+            history=None, pinned=None, confirm=None) -> Answer:
+        """on_context(片段列表)：片段选好、开始生成之前调用，界面据此先显示找到的资料。
+        history：同一对话之前的轮次（list[Turn]，旧写法 [(问, 答)] 也可以）；
+        pinned：用户附加的整份文件的片段（只给在线模型，排在最前）；
+        confirm(片段列表) → 片段列表：发给在线模型前让用户确认（可以去掉一些），返回空列表或抛 Cancelled 表示不发。"""
         if self.marker is None:
-            return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context, scope, history)
+            return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context, scope, history,
+                             pinned, confirm)
         with self.marker.active():
-            return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context, scope, history)
+            return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context, scope, history,
+                             pinned, confirm)
+
+    def is_online(self, ref: str) -> bool:
+        pc = self.cfg.providers.get(ref.split("/", 1)[0])
+        return bool(pc and pc.is_remote)
 
     def _ask(self, question, k, model_override, lang, on_token, mode, strategy, on_context=None, scope=None,
-             history=None) -> Answer:
+             history=None, pinned=None, confirm=None) -> Answer:
         question = question.strip()
         qlang = answer_lang(question, self.cfg)
+        turns = [t if isinstance(t, Turn) else Turn(question=t[0], answer=t[1]) for t in (history or [])]
+        ref = self.gateway.resolve(TASK, model_override)
+        online = self.is_online(ref)
+        mcfg = self.cfg.chat_model(ref)
+        num_ctx = mcfg.context_window
+        task = self.cfg.tasks[TASK]
+        max_out = (mcfg.max_output or task.max_tokens) if online else task.max_tokens
         extra = {}
         if strategy is not None:
             extra["strategy"] = strategy
         if scope is not None and not scope.empty:
             extra["scope"] = scope
         # 追问：检索时把上一轮的问题带上（“那第二点呢”这类问题本身缺少关键词）
-        query = question if not history else f"{history[-1][0]}\n{question}"
-        hits = self.retriever.search(query, k=k, lang=lang, mode=mode, **extra)
-        if not hits:
+        query = question if not turns else f"{turns[-1].question}\n{question}"
+        hits = self.retriever.search(query, k=k or (ONLINE_TOP_K if online else None), lang=lang, mode=mode, **extra)
+        hist = history_messages(turns, online, num_ctx)
+        pool = list(pinned or []) + [h for h in hits if h.chunk_id not in {p.chunk_id for p in pinned or []}]
+        if online:   # 在线模型上下文大：之前各轮找到的资料也一起带上
+            pool += prior_chunks(turns, {c.chunk_id for c in pool})
+        if not pool:
             return Answer(text=NO_CONTEXT_MESSAGE[lang_key(qlang)], no_context=True)
-
-        ref = self.gateway.resolve(TASK, model_override)
-        num_ctx = self.cfg.chat_model(ref).context_window
-        task = self.cfg.tasks[TASK]
-        context = fit_context(question, hits, qlang, num_ctx - history_tokens(history), task.max_tokens)
+        context = fit_context(question, pool, qlang, num_ctx - messages_tokens(hist), max_out)
         if not context:
             return Answer(text=NO_CONTEXT_MESSAGE[lang_key(qlang)], no_context=True)
-        if (strategy or self.cfg.retrieval.strategy) == "doc_first":
+        if not online and (strategy or self.cfg.retrieval.strategy) == "doc_first":
             context = expand_best(question, context, qlang, num_ctx, task.max_tokens,
                                   getattr(self.retriever, "neighbors", None), self.cfg.retrieval.neighbor_ratio)
-
         if on_context is not None:
             on_context(context)
-        messages = build_messages(question, context, qlang, history=history)
+        if online and confirm is not None:
+            context = confirm(context)
+            if not context and not turns:
+                return Answer(text=NO_CONTEXT_MESSAGE[lang_key(qlang)], no_context=True)
+        messages = build_messages(question, context, qlang, history=hist)
         result, _ = self.gateway.chat(TASK, messages, model_override=model_override, on_token=on_token)
         text, citations, invalid = validate_citations(result.text, context)
         return Answer(

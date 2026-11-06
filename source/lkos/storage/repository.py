@@ -76,7 +76,7 @@ class Repository:
     def list_sources(self) -> list[dict]:
         """来源文件夹及其文件数、文本块数、最近一次索引时间。"""
         rows = self.conn.execute(
-            """SELECT s.id, s.path, s.refresh, s.exclude_json, s.ocr,
+            """SELECT s.id, s.path, s.refresh, s.exclude_json, s.ocr, s.allow_online,
                       (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id AND f.tagged_at IS NOT NULL) AS tagged,
                       (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id) AS files,
                       (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id AND f.status = 'failed') AS failed,
@@ -94,18 +94,26 @@ class Repository:
         d["exclude"] = {"patterns": [str(x) for x in ex.get("patterns") or []],
                         "types": [str(x).lower().lstrip(".") for x in ex.get("types") or []]}
         d["ocr"] = bool(d.get("ocr"))
+        d["allow_online"] = bool(d.get("allow_online", 1))
         d["refresh"] = d.get("refresh") or "weekly"
         return d
 
+    def offline_only_folders(self) -> list[str]:
+        """不允许发往在线模型的文件夹。"""
+        return [r[0] for r in self.conn.execute("SELECT path FROM sources WHERE allow_online = 0")]
+
     def source_settings(self, path: str) -> dict | None:
         """文件夹的设置：refresh（manual / daily / weekly / monthly）、exclude（patterns、types）、ocr。"""
-        row = self.conn.execute("SELECT id, path, refresh, exclude_json, ocr FROM sources WHERE path = ?",
+        row = self.conn.execute("SELECT id, path, refresh, exclude_json, ocr, allow_online FROM sources WHERE path = ?",
                                 (path,)).fetchone()
         return self._source_row(dict(row)) if row else None
 
     def update_source_settings(self, source_id: int, refresh: str | None = None, exclude: dict | None = None,
-                               ocr: bool | None = None) -> None:
+                               ocr: bool | None = None, allow_online: bool | None = None) -> None:
         sets, args = [], []
+        if allow_online is not None:
+            sets.append("allow_online = ?")
+            args.append(1 if allow_online else 0)
         if refresh is not None:
             if refresh not in REFRESH_DAYS:
                 raise ValueError(f"更新周期只能是 {'、'.join(REFRESH_DAYS)}")
@@ -141,18 +149,65 @@ class Repository:
     # ---------- 问答记录 ----------
     def add_history(self, question: str, answer: str, not_found: bool, context_json: str, cited_json: str,
                     model: str | None, ttft_ms: int | None, latency_ms: int | None,
-                    kind: str = "qa", extra_json: str = "{}") -> int:
+                    kind: str = "qa", extra_json: str = "{}", thread_id: int | None = None,
+                    branch_of: int | None = None, asked_at: str | None = None) -> int:
+        """thread_id 为空时新开一个对话（对话 id = 这一轮的 id）。"""
         cur = self.conn.execute(
             """INSERT INTO qa_history(owner_id, asked_at, question, answer, not_found, context_json, cited_json,
-                                      model, ttft_ms, latency_ms, kind, extra_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (self.owner_id, now_iso(), question, answer, int(not_found), context_json, cited_json, model,
-             ttft_ms, latency_ms, kind, extra_json))
-        return int(cur.lastrowid)
+                                      model, ttft_ms, latency_ms, kind, extra_json, thread_id, branch_of)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (self.owner_id, asked_at or now_iso(), question, answer, int(not_found), context_json, cited_json, model,
+             ttft_ms, latency_ms, kind, extra_json, thread_id, branch_of))
+        hid = int(cur.lastrowid)
+        if thread_id is None:
+            self.conn.execute("UPDATE qa_history SET thread_id = ? WHERE id = ?", (hid, hid))
+        return hid
 
     def list_history(self, limit: int = 200) -> list[dict]:
+        """对话列表（每个对话一条）：标题是第一轮的问题，按最近一轮的时间倒序。"""
         rows = self.conn.execute(
-            "SELECT id, asked_at, question, not_found, kind FROM qa_history ORDER BY id DESC LIMIT ?", (limit,))
+            """SELECT t.tid AS thread_id, t.turns, t.last_at AS asked_at, t.last_id,
+                      f.id, f.question, f.not_found, f.kind, f.branch_of,
+                      (SELECT b.question FROM qa_history b WHERE b.id = f.branch_of) AS branch_from
+               FROM (SELECT COALESCE(thread_id, id) AS tid, COUNT(*) AS turns, MAX(asked_at) AS last_at,
+                            MAX(id) AS last_id, MIN(id) AS first_id
+                     FROM qa_history GROUP BY COALESCE(thread_id, id)) t
+               JOIN qa_history f ON f.id = t.first_id
+               ORDER BY t.last_id DESC LIMIT ?""", (limit,))
         return [dict(r) for r in rows]
+
+    def thread_turns(self, thread_id: int) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM qa_history WHERE COALESCE(thread_id, id) = ? ORDER BY id",
+                                 (int(thread_id),))
+        return [dict(r) for r in rows]
+
+    def thread_of(self, history_id: int) -> int | None:
+        row = self.conn.execute("SELECT COALESCE(thread_id, id) FROM qa_history WHERE id = ?",
+                                (int(history_id),)).fetchone()
+        return int(row[0]) if row else None
+
+    def branch_thread(self, turn_id: int) -> int:
+        """从某一轮分支：复制这个对话里到这一轮为止的所有轮次，成为一个新对话，返回新对话的 id。"""
+        tid = self.thread_of(turn_id)
+        if tid is None:
+            raise ValueError("没有这一轮")
+        cols = ("question, answer, not_found, context_json, cited_json, model, ttft_ms, latency_ms, kind, "
+                "extra_json, asked_at")
+        rows = self.conn.execute(f"SELECT {cols} FROM qa_history WHERE COALESCE(thread_id, id) = ? AND id <= ? "
+                                 "ORDER BY id", (tid, int(turn_id))).fetchall()
+        new_tid = None
+        with self.transaction():
+            for r in rows:
+                hid = self.add_history(r["question"], r["answer"], bool(r["not_found"]), r["context_json"],
+                                       r["cited_json"], r["model"], r["ttft_ms"], r["latency_ms"], kind=r["kind"],
+                                       extra_json=r["extra_json"], thread_id=new_tid, branch_of=int(turn_id),
+                                       asked_at=r["asked_at"])
+                new_tid = new_tid or hid
+        return int(new_tid)
+
+    def delete_thread(self, thread_id: int) -> int:
+        cur = self.conn.execute("DELETE FROM qa_history WHERE COALESCE(thread_id, id) = ?", (int(thread_id),))
+        return cur.rowcount
 
     def get_history(self, history_id: int) -> dict | None:
         row = self.conn.execute("SELECT * FROM qa_history WHERE id = ?", (history_id,)).fetchone()
@@ -363,6 +418,9 @@ class Repository:
         if scope.tags:
             conds.append(f"fl.id IN (SELECT file_id FROM file_tags WHERE tag IN ({','.join('?' * len(scope.tags))}))")
             params += list(scope.tags)
+        if scope.paths:
+            conds.append(f"fl.path IN ({','.join('?' * len(scope.paths))})")
+            params += list(scope.paths)
         return " AND " + " AND ".join(conds), params
 
     def knn_scoped(self, vector: Sequence[float], k: int, scope, lang: str | None = None) -> list[tuple[int, float]]:

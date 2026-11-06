@@ -108,6 +108,6 @@ def build_messages(question: str, context: Sequence[RetrievedChunk], lang: str, 
     sources = "\n\n".join(format_source(i, c) for i, c in enumerate(context, start=1))
     return [
         {"role": "system", "content": SYSTEM_PROMPTS[key]},
-        *history_turns(history),
+        *(history if history and isinstance(history[0], dict) else history_turns(history)),
         {"role": "user", "content": f"{src_label}\n{sources}\n\n{q_label}{question}"},
     ]

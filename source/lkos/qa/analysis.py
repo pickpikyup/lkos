@@ -15,8 +15,8 @@ from typing import Callable
 
 from lkos.errors import Cancelled, LkosError
 from lkos.qa.citations import validate_citations
+from lkos.qa.history import conversation_lang, history_messages, messages_tokens, prior_chunks
 from lkos.qa.prompt import LABELS, fit_context, format_source, lang_key
-from lkos.qa.service import answer_lang
 from lkos.types import Answer
 
 TASK = "knowledge_qa"
@@ -88,18 +88,29 @@ class Analyzer:
 
     def analyze(self, question: str, on_progress: Callable[[str, int, int], None] | None = None, on_context=None,
                 on_token=None, cancelled: Callable[[], bool] | None = None, scope=None,
-                model_override: str | None = None) -> tuple[Answer, list[str], dict]:
+                model_override: str | None = None, history=None, pinned=None,
+                confirm=None) -> tuple[Answer, list[str], dict]:
         """返回 (回答, 拆出的方面, {"keywords": 各语言关键词, "lang_hits": 各语言命中数})。
-        on_progress(阶段, 已完成, 总数[, 详情])：plan / keywords / search / write。"""
+        on_progress(阶段, 已完成, 总数[, 详情])：plan / keywords / search / write。
+        history：同一对话之前的轮次（list[Turn]）；回答语言默认中文，对话一直用英文 / 法文时用那种语言。
+        pinned / confirm：同 QAService.ask（附加的文件、发往在线模型前的确认）。"""
         with (self.marker.active() if self.marker else nullcontext()):
             return self._run(question.strip(), on_progress or (lambda *a: None), on_context, on_token,
-                             cancelled or (lambda: False), scope, model_override)
+                             cancelled or (lambda: False), scope, model_override, history or [], pinned or [],
+                             confirm)
 
-    def _run(self, q, progress, on_context, on_token, cancelled, scope, model_override):
+    def _run(self, q, progress, on_context, on_token, cancelled, scope, model_override, turns=(), pinned=(),
+             confirm=None):
         if not q:
             raise LkosError("请输入要分析的问题")
-        key = lang_key(answer_lang(q))
-        P = PROMPTS["zh" if key == "zh" else "en"]
+        key = conversation_lang([t.question for t in turns] + [q])
+        P = dict(PROMPTS["zh" if key == "zh" else "en"])
+        if key == "fr":
+            P["system"] = P["system"].replace("Answer in English.", "Réponds en français.")
+        ref = self.gateway.resolve(TASK, model_override)
+        pc = self.cfg.providers.get(ref.split("/", 1)[0])
+        online = bool(pc and pc.is_remote)
+        per_aspect, per_lang = (PER_ASPECT * 2, PER_LANG * 2) if online else (PER_ASPECT, PER_LANG)
         progress("plan", 0, 1)
         plan, _ = self.gateway.chat(TASK, [{"role": "user", "content": P["plan"].format(q=q)}],
                                     model_override=model_override, max_tokens=PLAN_TOKENS, log_as="analysis")
@@ -116,8 +127,9 @@ class Analyzer:
 
         extra = {"scope": scope} if scope is not None and not scope.empty else {}
         # 检索任务：每个方面（按提问语言）+ 每种语言的关键词（只在该语言的资料里找）
-        jobs = [("aspect", a, f"{q}\n{a}", "auto", PER_ASPECT) for a in aspects]
-        jobs += [("lang", lang, keywords[lang], lang, PER_LANG) for lang in LANGS if keywords.get(lang)]
+        base_q = q if not turns else f"{turns[-1].question}\n{q}"
+        jobs = [("aspect", a, f"{base_q}\n{a}", "auto", per_aspect) for a in aspects]
+        jobs += [("lang", lang, keywords[lang], lang, per_lang) for lang in LANGS if keywords.get(lang)]
         groups, lang_hits = [], {}
         for i, (kind, label, query, lang, k) in enumerate(jobs, start=1):
             if cancelled():
@@ -131,30 +143,38 @@ class Analyzer:
         info = {"keywords": keywords, "lang_hits": lang_hits}
 
         # 轮流取每组的第 1、第 2……个片段，去重，保证每个方面、每种语言都有资料进入上下文
-        ordered, seen = [], set()
-        for rank in range(max(PER_ASPECT, PER_LANG)):
+        ordered, seen = list(pinned), {c.chunk_id for c in pinned}
+        for rank in range(max(per_aspect, per_lang)):
             for hits in groups:
                 if rank < len(hits) and hits[rank].chunk_id not in seen:
                     seen.add(hits[rank].chunk_id)
                     ordered.append(hits[rank])
+        if online:
+            ordered += prior_chunks(list(turns), {c.chunk_id for c in ordered})
         if not ordered:
-            return Answer(text="资料中没有找到相关信息。" if key == "zh" else "No relevant information was found.",
-                          no_context=True), aspects, info
-        num_ctx = self.cfg.chat_model(self.gateway.resolve(TASK, model_override)).context_window
+            return Answer(text={"zh": "资料中没有找到相关信息。", "fr": "Aucune information pertinente trouvée."}.get(
+                key, "No relevant information was found."), no_context=True), aspects, info
+        mcfg = self.cfg.chat_model(ref)
+        num_ctx = mcfg.context_window
+        out_tokens = max(ANALYSIS_TOKENS, mcfg.max_output or 0) if online else ANALYSIS_TOKENS
+        hist = history_messages(list(turns), online, num_ctx)
         aspect_text = "\n".join(f"{i}. {a}" for i, a in enumerate(aspects, start=1))
-        context = fit_context(q + aspect_text + P["system"], ordered, key, num_ctx, ANALYSIS_TOKENS)
+        context = fit_context(q + aspect_text + P["system"], ordered, lang_key(key), num_ctx - messages_tokens(hist),
+                              out_tokens)
         if on_context:
             on_context(context)
+        if online and confirm is not None:
+            context = confirm(context)
         if cancelled():
             raise Cancelled("已停止分析")
         progress("write", 0, 1)
-        src_label, _ = LABELS[key]
+        src_label, _ = LABELS[lang_key(key)]
         sources = "\n\n".join(format_source(i, c) for i, c in enumerate(context, start=1))
         result, _ = self.gateway.chat(
-            TASK, [{"role": "system", "content": P["system"]},
+            TASK, [{"role": "system", "content": P["system"]}, *hist,
                    {"role": "user", "content": P["user"].format(src_label=src_label, sources=sources, q=q,
                                                                 aspects=aspect_text)}],
-            model_override=model_override, on_token=on_token, max_tokens=ANALYSIS_TOKENS, log_as="analysis")
+            model_override=model_override, on_token=on_token, max_tokens=out_tokens, log_as="analysis")
         text, citations, invalid = validate_citations(result.text, context)
         return Answer(text=text, citations=citations, invalid_refs=invalid, no_context=False, context=context,
                       ttft_ms=result.ttft_ms, latency_ms=result.latency_ms, input_tokens=result.input_tokens,

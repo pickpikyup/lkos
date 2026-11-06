@@ -65,11 +65,15 @@ ADDED_COLUMNS = {
         ("refresh", "TEXT NOT NULL DEFAULT 'weekly'"),       # manual / daily / weekly / monthly
         ("exclude_json", "TEXT NOT NULL DEFAULT '{}'"),      # {"dirs": [...], "exts": [...]}
         ("ocr", "INTEGER NOT NULL DEFAULT 0"),
+        ("allow_online", "INTEGER NOT NULL DEFAULT 1"),       # 是否允许把这个文件夹的内容发往在线模型
     ],
     "files": [
         ("tagged_at", "TEXT"),                                # 自动生成标签的时间；内容变化后清空，重新生成
     ],
     "qa_history": [
+        ("thread_id", "INTEGER"),                             # 所属对话（第一轮的 id）；旧记录为空，各自算一个对话
+        ("branch_of", "INTEGER"),                             # 分支：从哪一轮（原对话里那一轮的 id）分出来
+
         ("kind", "TEXT NOT NULL DEFAULT 'qa'"),              # qa / summary / extract / analysis
         ("extra_json", "TEXT NOT NULL DEFAULT '{}'"),        # 提取的表格、深度分析的子问题等
     ],

@@ -117,7 +117,7 @@ def test_not_found_only_for_whole_answer(tmp_path, corpus, answer, expect):
 
 
 def test_dev_mode_setting_and_logs(bridge, corpus, tmp_path):
-    assert bridge.settings() == {"dev_mode": False, "auto_tags": True}
+    assert bridge.settings() == {"dev_mode": False, "auto_tags": True, "confirm_online": True}
     assert bridge.set_setting("nope", 1)["error"]
     assert bridge.set_setting("dev_mode", True)["dev_mode"] is True
     assert bridge._load_settings()["dev_mode"] is True            # 写入了 data/ui-settings.json

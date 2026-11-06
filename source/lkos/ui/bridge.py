@@ -26,6 +26,7 @@ from lkos.app import App
 from lkos.errors import Cancelled, LkosError
 from lkos.evaluation.evaluate import is_not_found
 from lkos.parsers.base import file_type_groups
+from lkos.ui.chat_api import ChatMixin
 from lkos.ui.models_api import ModelsMixin
 from lkos.parsers.ocr import available as ocr_available
 from lkos.daemon import app_lock, index_lock, wait_for_index_lock
@@ -40,7 +41,7 @@ log = get_logger("app")
 ilog = get_logger("index")
 LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
 SETTINGS_FILE = "ui-settings.json"
-DEFAULT_SETTINGS = {"dev_mode": False, "auto_tags": True}
+DEFAULT_SETTINGS = {"dev_mode": False, "auto_tags": True, "confirm_online": True}
 
 AUTO_CHECK_SECONDS = 600       # 每 10 分钟看一次有没有到期的文件夹
 
@@ -53,10 +54,15 @@ PROBLEM_HINTS = {
 
 def chunk_dict(n: int, c: RetrievedChunk, cited: set[int] | None = None) -> dict:
     return {
-        "n": n, "file": c.file_name, "path": c.file_path, "type": c.file_type,
+        "n": n, "id": c.chunk_id, "lang": c.lang, "file": c.file_name, "path": c.file_path, "type": c.file_type,
         "loc": c.location.describe(c.file_type), "page": c.location.page,
         "text": c.text, "score": round(c.score or 0.0, 5), "cited": n in (cited or set()),
     }
+
+
+def _job_cb(cb: dict) -> dict:
+    """任务回调里给模型服务用的部分（去掉 qid）。"""
+    return {k: v for k, v in cb.items() if k != "qid"}
 
 
 def system_open(path: str, reveal: bool = False) -> str | None:
@@ -299,7 +305,7 @@ class IndexWorker:
             self.enqueue(folder, background=True, kind="tags")
 
 
-class Bridge(ModelsMixin):
+class Bridge(ChatMixin, ModelsMixin):
     """暴露给前端的方法。"""
 
     def __init__(self, home: Path | None = None, config_path: Path | None = None, overrides: dict | None = None,
@@ -325,6 +331,7 @@ class Bridge(ModelsMixin):
         self._indexer = IndexWorker(lambda: App.open(**kw), self._emit, auto_refresh=auto_refresh,
                                     home=self._app.home, auto_tags=lambda: bool(self._settings.get("auto_tags")))
         self._sent: list[dict] = []   # 窗口还没准备好时（以及测试中）记下推送的事件
+        self._pending: dict = {}      # 等待用户确认的在线发送（qid → {event, keep}）
 
     # ---------- 内部 ----------
     def _attach(self, window) -> None:
@@ -421,7 +428,7 @@ class Bridge(ModelsMixin):
             self._emit({"type": "token", "qid": qid, "text": t})
 
         cb = {"on_context": on_context, "on_progress": on_progress, "on_token": on_token,
-              "cancelled": self._cancel.is_set}
+              "cancelled": self._cancel.is_set, "qid": qid}
         try:
             record = work(cb, t0)
             self._emit({"type": "done", "qid": qid, "record": record})
@@ -471,7 +478,7 @@ class Bridge(ModelsMixin):
 
         def work(cb, t0):
             log.info("开始总结：%s", path)
-            ans = self._app.summarizer.summarize_file(path, **cb)
+            ans = self._app.summarizer.summarize_file(path, **_job_cb(cb))
             ans.latency_ms = int((time.perf_counter() - t0) * 1000)
             record = self._save(question, ans, kind="summary", extra={"path": path})
             log.info("总结完成：共 %.0f 秒，出处 %s", ans.latency_ms / 1000, record["cited"] or "无")
@@ -487,7 +494,7 @@ class Bridge(ModelsMixin):
 
         def work(cb, t0):
             log.info("深度分析：%s", question)
-            ans, aspects, info = self._app.analyzer.analyze(question, scope=Scope.from_dict(scope), **cb)
+            ans, aspects, info = self._app.analyzer.analyze(question, scope=Scope.from_dict(scope), **_job_cb(cb))
             log.info("拆分的方面：%s", "；".join(aspects))
             log.info("各语言关键词：%s；命中 %s", info["keywords"] or "（模型没给出）", info["lang_hits"])
             ans.latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -543,7 +550,7 @@ class Bridge(ModelsMixin):
         return {"ok": True, "path": str(path)}
 
     def _save(self, question: str, ans: Answer, kind: str = "qa", extra: dict | None = None,
-              cited: list[int] | None = None) -> dict:
+              cited: list[int] | None = None, thread_id: int | None = None, model: str | None = None) -> dict:
         if cited is None:
             cited = sorted({c.ref for c in ans.citations})
         ctx = [chunk_dict(i, c, set(cited)) for i, c in enumerate(ans.context, start=1)]
@@ -553,17 +560,21 @@ class Bridge(ModelsMixin):
             not_found = not (extra or {}).get("rows")
         else:
             not_found = bool(ans.no_context) or (not cited and is_not_found(ans.text) and len(ans.text) <= 60)
-        model = self._app.cfg.tasks["knowledge_qa"].default_model
+        model = model or self._app.cfg.tasks["knowledge_qa"].default_model
         hid = self._app.repo.add_history(question, ans.text, not_found, json.dumps(ctx, ensure_ascii=False),
                                          json.dumps(cited), model, ans.ttft_ms, ans.latency_ms, kind=kind,
-                                         extra_json=json.dumps(extra or {}, ensure_ascii=False))
+                                         extra_json=json.dumps(extra or {}, ensure_ascii=False),
+                                         thread_id=int(thread_id) if thread_id else None)
         return self._record(self._app.repo.get_history(hid))
 
-    @staticmethod
-    def _record(row: dict | None) -> dict | None:
+    def _record(self, row: dict | None) -> dict | None:
         if row is None:
             return None
-        return {"id": row["id"], "question": row["question"], "answer": row["answer"],
+        from lkos.models_config import display_name, is_online_ref, load_models
+
+        return {"id": row["id"], "thread_id": row.get("thread_id") or row["id"], "branch_of": row.get("branch_of"),
+                "model_name": display_name(row["model"], load_models(self._app.home)),
+                "online": is_online_ref(row["model"]), "question": row["question"], "answer": row["answer"],
                 "not_found": bool(row["not_found"]), "context": json.loads(row["context_json"]),
                 "cited": json.loads(row["cited_json"]), "model": row["model"], "ttft_ms": row["ttft_ms"],
                 "latency_ms": row["latency_ms"], "asked_at": row["asked_at"], "kind": row.get("kind") or "qa",
@@ -648,7 +659,7 @@ class Bridge(ModelsMixin):
         if s is None:
             return {"error": "没有这个文件夹"}
         return {"id": s["id"], "path": s["path"], "refresh": s["refresh"], "exclude": s["exclude"], "ocr": s["ocr"],
-                "ocr_available": ocr_available()}
+                "allow_online": s["allow_online"], "ocr_available": ocr_available()}
 
     def set_source_settings(self, source_id: int, settings: dict) -> dict:
         """settings：{"refresh", "exclude": {"patterns", "types"}, "ocr"}，只改给出的项。
@@ -660,7 +671,7 @@ class Bridge(ModelsMixin):
         try:
             self._call(lambda: self._app.repo.update_source_settings(
                 int(source_id), refresh=settings.get("refresh"), exclude=settings.get("exclude"),
-                ocr=settings.get("ocr")))
+                ocr=settings.get("ocr"), allow_online=settings.get("allow_online")))
         except ValueError as e:
             return {"error": str(e)}
         after = self.source_settings(source_id)
