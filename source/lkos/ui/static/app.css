@@ -464,3 +464,4 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 #send-hint { display: none; }
 .composer .row { flex-wrap: nowrap; }
 .composer .seg button { white-space: nowrap; }
+.row-in .model-pick { flex: 0 1 220px; width: auto; }

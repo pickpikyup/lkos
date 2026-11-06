@@ -960,16 +960,20 @@
       ${field("base_url", `<input name="base_url" class="mini" value="${esc(ed.base_url || "")}" placeholder="${esc(g.base_url.example)}">`)}
       ${ed.preset === "custom" ? field("web", `<input name="web" class="mini" value="${esc(ed.web || "")}" placeholder="${esc(g.web.example)}">`) : ""}
       ${field("format", `<select name="format" class="mini"${ed.preset !== "custom" ? " disabled" : ""}><option value="openai"${ed.format !== "anthropic" ? " selected" : ""}>OpenAI 兼容</option><option value="anthropic"${ed.format === "anthropic" ? " selected" : ""}>Anthropic</option></select>`)}
-      ${field("api_key", `<input name="api_key" class="mini" type="password" autocomplete="off" placeholder="${ed.id && ed.key_set ? "已保存（不改就留空）" : esc(p ? p.key_hint : g.api_key.example)}">`)}
-      ${field("model", `<span class="row-in"><input name="model" class="mini" list="model-list" value="${esc(ed.model || "")}" placeholder="${esc(p && p.models[0] ? p.models[0] : g.model.example)}">
-        <button type="button" class="btn small" data-model-list="1">获取模型列表</button></span>
-        <datalist id="model-list">${(S.modelList || (p ? p.models : [])).map((m) => `<option value="${esc(m)}">`).join("")}</datalist>`)}
+      ${field("api_key", `<input name="api_key" class="mini" type="password" autocomplete="off" value="${esc(ed.api_key || "")}" placeholder="${ed.id && ed.key_set ? "已保存（不改就留空）" : esc(p ? p.key_hint : g.api_key.example)}">`)}
+      ${field("model", `<span class="row-in"><input name="model" class="mini" value="${esc(ed.model || "")}" placeholder="${esc(p && p.models[0] ? p.models[0] : g.model.example)}">
+        <select name="model_pick" class="mini model-pick" aria-label="从列表选择模型"${(p && p.models.length) ? "" : " hidden"}>${modelPickOptions(p ? p.models : [], ed.model)}</select>
+        <button type="button" class="btn small" data-model-list="1">获取模型列表</button></span>`)}
       ${field("context_window", `<input name="context_window" class="mini" type="number" min="2048" value="${ed.context_window || (p ? p.context_window : 32000)}">`)}
       <label class="check"><input type="checkbox" name="enabled"${ed.enabled !== false ? " checked" : ""}> 启用（在对话的模型下拉框里出现）</label>
       <div class="mfoot"><span class="hint" id="model-test-msg">密钥明文保存在本机 data/models.json（不进 Git）</span><span class="grow"></span>
         <button type="button" class="btn small" data-model-test-form="1">测试连接</button>
         <button type="button" class="btn small" data-model-cancel="1">取消</button>
         <button type="submit" class="btn small primary">保存</button></div></form>`;
+  }
+
+  function modelPickOptions(list, current) {
+    return `<option value="">从列表选择…</option>` + list.map((m) => `<option value="${esc(m)}"${m === current ? " selected" : ""}>${esc(m)}</option>`).join("");
   }
 
   function formEntry() {
@@ -987,11 +991,12 @@
   function bindModelsPage() {
     const mf = $("model-form");
     if (mf) {
+      mf.model_pick.addEventListener("change", () => { if (mf.model_pick.value) mf.model.value = mf.model_pick.value; });
       mf.preset.addEventListener("change", () => {
         const p = S.mcfg.presets.find((x) => x.id === mf.preset.value);
         S.modelEdit = Object.assign(formEntry(), p ? { preset: p.id, name: p.name, base_url: p.base_url, format: p.format,
-          web: p.web, context_window: p.context_window, model: p.models[0] || "" }
-          : { preset: "custom", base_url: "", name: "", web: "", format: "openai", model: "", context_window: 32000 });
+          web: p.web, context_window: p.context_window, model: p.models[0] || "", api_key: "" }
+          : { preset: "custom", base_url: "", name: "", web: "", format: "openai", model: "", context_window: 32000, api_key: "" });
         S.modelList = null;
         renderModels(S.mcfg);
       });
@@ -1393,10 +1398,17 @@
     if (d.modelTest) { toast("正在测试…"); const r = await api("test_online", { id: d.modelTest }); toast(r.ok ? "连接正常：" + r.message : r.message); return; }
     if (d.modelTestForm) { $("model-test-msg").textContent = "正在测试…"; const r = await api("test_online", formEntry()); $("model-test-msg").textContent = (r.ok ? "✓ " : "✗ ") + r.message; return; }
     if (d.modelList) {
+      // 只更新下拉框，不重画表单：已经填的密钥、名称等都保留
+      const f = $("model-form"), msg = $("model-test-msg");
+      msg.textContent = "正在获取模型列表…";
       const r = await api("list_online_models", formEntry());
-      if (r.error) { $("model-test-msg").textContent = r.error; return; }
-      S.modelEdit = formEntry(); S.modelList = r.models; renderModels(S.mcfg);
-      toast(`获取到 ${r.models.length} 个模型，在“模型名”里选择`); return;
+      if (r.error) { msg.textContent = r.error; return; }
+      const pick = f.model_pick;
+      pick.innerHTML = modelPickOptions(r.models, f.model.value.trim());
+      pick.hidden = !r.models.length;
+      msg.textContent = r.models.length ? `获取到 ${r.models.length} 个模型，在右边的下拉框里选择` : "服务没有返回模型列表，请手动填写模型名";
+      if (r.models.length) pick.focus();
+      return;
     }
     if (d.embCancel) { $("emb-flow").innerHTML = ""; return; }
     if (d.scopeFile != null) { setScopeFile(d.scopeFile); if (S.mode === "search") setMode("qa"); toast(`接下来只在《${baseName(d.scopeFile)}》里找`); $("q").focus(); return; }
