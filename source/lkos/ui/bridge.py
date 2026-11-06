@@ -26,6 +26,7 @@ from lkos.app import App
 from lkos.errors import Cancelled, LkosError
 from lkos.evaluation.evaluate import is_not_found
 from lkos.parsers.base import file_type_groups
+from lkos.models_config import load_models, model_choices
 from lkos.ui.chat_api import ChatMixin
 from lkos.ui.models_api import ModelsMixin
 from lkos.parsers.ocr import available as ocr_available
@@ -381,7 +382,8 @@ class Bridge(ChatMixin, ModelsMixin):
                     "models": models, "model": self._app.cfg.tasks["knowledge_qa"].default_model,
                     "history": self._app.repo.list_history(), "sources": self._app.repo.list_sources(),
                     "index": self._indexer.state, "settings": dict(self._settings),
-                    "file_types": file_type_groups(list(self._app.cfg.indexing.extensions))}
+                    "file_types": file_type_groups(list(self._app.cfg.indexing.extensions)),
+                    "choices": model_choices(load_models(self._app.home), self._app.cfg)}
         out = self._call(run)
         for m in out["models"]:
             (log.info if m["ok"] else log.warning)("模型 %s：%s", m["ref"], m["message"] or ("就绪" if m["ok"] else "不可用"))
