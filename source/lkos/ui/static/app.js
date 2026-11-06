@@ -969,7 +969,7 @@
       <span class="fh">${esc(g[key].hint)}${g[key].example ? `<span class="ex">例：${esc(g[key].example)}</span>` : ""}</span></label>`;
     return `<form class="mform edit" id="model-form">
       <label class="ff"><span class="fl">服务</span><select name="preset" class="mini">
-        ${presets.map((x) => `<option value="${x.id}"${x.id === ed.preset ? " selected" : ""}>${esc(x.name)}</option>`).join("")}
+        ${Object.entries(data.groups || { vendor: "" }).map(([gid, glabel]) => `<optgroup label="${esc(glabel)}">${presets.filter((x) => (x.group || "vendor") === gid).map((x) => `<option value="${x.id}"${x.id === ed.preset ? " selected" : ""}>${esc(x.name)}</option>`).join("")}</optgroup>`).join("")}
         <option value="custom"${ed.preset === "custom" ? " selected" : ""}>自定义接口…</option></select>
         <span class="fh">${p ? `去 <span class="ex">${esc(p.web)}</span> 创建密钥` : "填写任意兼容 OpenAI 或 Anthropic 格式的接口"}</span></label>
       ${field("name", `<input name="name" class="mini" value="${esc(ed.name || "")}" placeholder="${esc(g.name.example)}">`)}

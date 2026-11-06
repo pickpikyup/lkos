@@ -154,7 +154,11 @@ def test_bridge_model_config_and_embedding_switch(tmp_path, corpus, monkeypatch)
         m = b.models()
         assert m["local"]["ok"] and "bge-m3" in m["local"]["models"]
         assert {p["id"] for p in m["presets"]} >= {"anthropic", "openai", "deepseek", "qwen", "kimi", "zhipu", "gemini",
-                                                    "openrouter"}
+                                                    "openrouter", "nous", "together", "groq", "siliconflow"}
+        nous = next(p for p in m["presets"] if p["id"] == "nous")
+        assert nous["group"] == "aggregator" and nous["base_url"] == "https://inference-api.nousresearch.com/v1"
+        assert set(m["groups"]) == {"vendor", "aggregator"} and all(p["group"] in m["groups"] for p in m["presets"])
+        assert len({p["id"] for p in m["presets"]}) == len(m["presets"])
         assert m["guide"]["base_url"]["example"] and m["config"]["online"] == []
         assert b.save_online({"name": "Claude", "format": "anthropic", "base_url": "https://api.anthropic.com",
                               "model": "claude-sonnet-5-5"})["error"] == "请填写API 密钥"

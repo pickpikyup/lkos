@@ -16,7 +16,8 @@ from pathlib import Path
 MODELS_FILE = "models.json"
 ONLINE_PREFIX = "on-"
 
-# 预置的在线服务。models 只是填写示例，以“获取模型列表”拿到的为准
+# 预置的在线服务（group：vendor 模型厂商 / aggregator 第三方聚合与推理服务）。
+# models 只是填写示例，以“获取模型列表”拿到的为准
 PRESETS: list[dict] = [
     {"id": "anthropic", "name": "Claude（Anthropic）", "format": "anthropic", "base_url": "https://api.anthropic.com",
      "web": "https://console.anthropic.com/settings/keys", "key_hint": "sk-ant-…",
@@ -39,9 +40,37 @@ PRESETS: list[dict] = [
     {"id": "gemini", "name": "Google Gemini", "format": "openai",
      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
      "web": "https://aistudio.google.com/apikey", "key_hint": "AIza…", "models": [], "context_window": 1000000},
-    {"id": "openrouter", "name": "OpenRouter", "format": "openai", "base_url": "https://openrouter.ai/api/v1",
-     "web": "https://openrouter.ai/keys", "key_hint": "sk-or-…", "models": [], "context_window": 128000},
+    # ---- 第三方聚合 / 推理服务：一个密钥可以调用多家的模型（都用 OpenAI 兼容接口）----
+    {"id": "openrouter", "group": "aggregator", "name": "OpenRouter", "format": "openai",
+     "base_url": "https://openrouter.ai/api/v1", "web": "https://openrouter.ai/keys", "key_hint": "sk-or-…",
+     "models": [], "context_window": 128000},
+    {"id": "nous", "group": "aggregator", "name": "Nous Research（Nous Portal）", "format": "openai",
+     "base_url": "https://inference-api.nousresearch.com/v1", "web": "https://portal.nousresearch.com",
+     "key_hint": "…", "models": ["Hermes-4-70B", "Hermes-4-405B"], "context_window": 128000},
+    {"id": "together", "group": "aggregator", "name": "Together AI", "format": "openai",
+     "base_url": "https://api.together.xyz/v1", "web": "https://api.together.xyz/settings/api-keys",
+     "key_hint": "…", "models": [], "context_window": 128000},
+    {"id": "groq", "group": "aggregator", "name": "Groq", "format": "openai",
+     "base_url": "https://api.groq.com/openai/v1", "web": "https://console.groq.com/keys", "key_hint": "gsk_…",
+     "models": [], "context_window": 128000},
+    {"id": "fireworks", "group": "aggregator", "name": "Fireworks AI", "format": "openai",
+     "base_url": "https://api.fireworks.ai/inference/v1", "web": "https://fireworks.ai/account/api-keys",
+     "key_hint": "fw_…", "models": [], "context_window": 128000},
+    {"id": "deepinfra", "group": "aggregator", "name": "DeepInfra", "format": "openai",
+     "base_url": "https://api.deepinfra.com/v1/openai", "web": "https://deepinfra.com/dash/api_keys",
+     "key_hint": "…", "models": [], "context_window": 128000},
+    {"id": "siliconflow", "group": "aggregator", "name": "硅基流动 SiliconFlow", "format": "openai",
+     "base_url": "https://api.siliconflow.cn/v1", "web": "https://cloud.siliconflow.cn/account/ak",
+     "key_hint": "sk-…", "models": [], "context_window": 128000},
+    {"id": "volcengine", "group": "aggregator", "name": "火山引擎方舟", "format": "openai",
+     "base_url": "https://ark.cn-beijing.volces.com/api/v3", "web": "https://console.volcengine.com/ark",
+     "key_hint": "…", "models": [], "context_window": 128000},
+    {"id": "mistral", "name": "Mistral AI", "format": "openai", "base_url": "https://api.mistral.ai/v1",
+     "web": "https://console.mistral.ai/api-keys", "key_hint": "…", "models": [], "context_window": 128000},
+    {"id": "xai", "name": "xAI（Grok）", "format": "openai", "base_url": "https://api.x.ai/v1",
+     "web": "https://console.x.ai", "key_hint": "xai-…", "models": [], "context_window": 128000},
 ]
+PRESET_GROUPS = {"vendor": "模型厂商", "aggregator": "第三方聚合 / 推理服务（一个密钥用多家模型）"}
 
 # 自定义接口的填写说明与示例（界面上显示）
 CUSTOM_GUIDE = {

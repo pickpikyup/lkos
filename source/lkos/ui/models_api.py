@@ -6,7 +6,7 @@ from pathlib import Path
 
 from lkos.errors import LkosError, ModelUnavailableError
 from lkos.logs import get_logger
-from lkos.models_config import (CUSTOM_GUIDE, PRESETS, default_models, display_name, load_models, model_choices,
+from lkos.models_config import (CUSTOM_GUIDE, PRESET_GROUPS, PRESETS, default_models, display_name, load_models, model_choices,
                                 new_id, normalize_online, public, save_models)
 
 log = get_logger("ui")
@@ -47,7 +47,8 @@ class ModelsMixin:
             local["ok"] = True
         except (LkosError, AttributeError) as e:
             local["message"] = str(e)
-        return {"config": public(mc), "presets": PRESETS, "guide": CUSTOM_GUIDE, "local": local,
+        presets = [{**p, "group": p.get("group", "vendor")} for p in PRESETS]
+        return {"config": public(mc), "presets": presets, "groups": PRESET_GROUPS, "guide": CUSTOM_GUIDE, "local": local,
                 "choices": self.model_choices(), "embedding_in_use": self._app.cfg.embedding.ref,
                 "embedding_dim": self._app.cfg.embedding.dim}
 
