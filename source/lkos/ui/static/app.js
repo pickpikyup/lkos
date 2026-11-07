@@ -148,9 +148,9 @@
     $("history").innerHTML = html;
     let f = "";
     for (const s of S.sources) {
-      const name = s.path.split("/").filter(Boolean).pop() || s.path;
-      f += `<button type="button" class="side-item${S.view === "lib" ? " active" : ""}" data-lib="1" title="${esc(s.path)}">
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z"/></svg>
+      const name = sourceName(s);
+      f += `<button type="button" class="side-item${S.view === "lib" ? " active" : ""}" data-lib="1" title="${esc(s.kind === "apple_notes" ? "Mac 备忘录（导出在 " + s.path + "）" : s.path)}">
+        ${s.kind === "apple_notes" ? '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="2"/><path d="M5.5 5.5h5M5.5 8h5M5.5 10.5h3"/></svg>' : '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z"/></svg>'}
         <span class="t">${esc(name)}</span><span class="n">${fmt(s.files)}</span></button>`;
     }
     if (!S.sources.length) f = '<div class="side-empty">还没有添加文件夹</div>';
@@ -216,7 +216,7 @@
     if (sc.path) return `《${baseName(sc.path)}》`;
     const parts = [];
     if (sc.source_ids && sc.source_ids.length) {
-      const names = S.sources.filter((s) => sc.source_ids.includes(s.id)).map((s) => baseName(s.path));
+      const names = S.sources.filter((s) => sc.source_ids.includes(s.id)).map(sourceName);
       parts.push(names.length > 2 ? `${names.length} 个文件夹` : names.join("、") || "所选文件夹");
     }
     if (sc.file_types && sc.file_types.length) {
@@ -242,7 +242,7 @@
       h += `<div><h3>只用这一份文件</h3></div><div class="file"><span title="${esc(sc.path)}">${esc(baseName(sc.path))}</span>
         <button type="button" data-scope-clear-file="1" aria-label="取消，改回按文件夹和类型">×</button></div>`;
     } else {
-      h += `<div><h3>文件夹</h3><div class="opts">${S.sources.length ? S.sources.map((s) => `<label><input type="checkbox" data-scope-src="${s.id}"${sc.source_ids.includes(s.id) ? " checked" : ""}><span class="p" title="${esc(s.path)}">${esc(baseName(s.path))}</span></label>`).join("") : '<span class="hint">还没有添加文件夹</span>'}</div></div>
+      h += `<div><h3>文件夹</h3><div class="opts">${S.sources.length ? S.sources.map((s) => `<label><input type="checkbox" data-scope-src="${s.id}"${sc.source_ids.includes(s.id) ? " checked" : ""}><span class="p" title="${esc(s.path)}">${esc(sourceName(s))}</span></label>`).join("") : '<span class="hint">还没有添加文件夹</span>'}</div></div>
         <div><h3>文件类型</h3><div class="opts inline">${TYPES.map((t) => `<label><input type="checkbox" data-scope-type="${t[0]}"${sc.file_types.includes(t[0]) ? " checked" : ""}>${t[1]}</label>`).join("")}</div></div>
         ${S.tags.length || sc.tags.length ? `<div><h3>标签</h3><div class="opts inline">${[...new Set([...sc.tags, ...S.tags.slice(0, 24).map((t) => t.tag)])].map((t) => `<label><input type="checkbox" data-scope-tag="${esc(t)}"${sc.tags.includes(t) ? " checked" : ""}>${esc(t)}</label>`).join("")}</div></div>` : ""}
         <div><h3>修改时间</h3><div class="opts inline">${DAYS.map((x) => `<label><input type="radio" name="scope-days" data-scope-days="${x[0]}"${sc.days === x[0] ? " checked" : ""}>${x[1]}</label>`).join("")}</div></div>
@@ -523,10 +523,15 @@
     return body.replace(re, (m) => `<mark>${m}</mark>`);
   }
 
+  function isNotePath(p) {
+    return S.sources.some((s) => s.kind === "apple_notes" && String(p).startsWith(s.path + "/"));
+  }
+
   function srcActions(path, type, page, n) {
+    const note = isNotePath(path);
     return `<div class="acts">
-      <button type="button" class="btn primary" data-open="${esc(path)}">${type === "pdf" && page ? `打开（第 ${page} 页）` : "打开原文件"}</button>
-      <button type="button" class="btn" data-reveal="${esc(path)}">在访达中显示</button>
+      <button type="button" class="btn primary" data-open="${esc(path)}">${note ? "在备忘录中打开" : type === "pdf" && page ? `打开（第 ${page} 页）` : "打开原文件"}</button>
+      ${note ? "" : `<button type="button" class="btn" data-reveal="${esc(path)}">在访达中显示</button>`}
       <button type="button" class="btn" data-scope-file="${esc(path)}">只问这份文件</button>
       <button type="button" class="btn" data-attach="${esc(path)}">附加到对话</button>
       ${n != null ? `<button type="button" class="btn" data-copy-src="${n}">复制原文</button>` : ""}
@@ -1287,6 +1292,18 @@
     $("log-foot").textContent = `共 ${L.lines.length} 条 · 日志文件：${L.file}`;
   }
 
+  function sourceName(s) {
+    return s.kind === "apple_notes" ? "Mac 备忘录" : (s.path.split("/").filter(Boolean).pop() || s.path);
+  }
+
+  async function addNotes() {
+    toast("正在读取备忘录…第一次会请你允许 LKOS 访问“备忘录”");
+    const r = await api("add_notes");
+    if (r.error) { toast(r.error); return; }
+    toast(`已添加 Mac 备忘录：${fmt(r.total)} 条，开始索引`);
+    refreshLibrary();
+  }
+
   function renderLib() {
     const lib = S.lib, el = $("lib");
     if (!lib) { el.innerHTML = "<p>正在读取资料库…</p>"; return; }
@@ -1295,18 +1312,19 @@
     let h = `<div class="lib-head"><h1>资料库</h1><span class="sub">${lib.sources.length} 个文件夹 · ${fmt(total)} 个文件 · ${fmt(lib.stats.chunks)} 个文本块</span>
       <span class="grow"></span>
       ${lib.sources.length ? '<button type="button" class="btn" data-action="update-all">全部立即更新</button>' : ""}
+      ${lib.notes_available && !lib.sources.some((s) => s.kind === "apple_notes") ? '<button type="button" class="btn" data-action="add-notes">添加 Mac 备忘录</button>' : ""}
       <button type="button" class="btn primary" data-action="add">添加文件夹</button></div>
       <div class="drop" id="drop">把文件夹拖到这里添加 · 支持 <span id="drop-formats">${esc(FORMATS || "PDF、Word、PowerPoint、Markdown")}</span></div>`;
     if (!lib.sources.length) h += '<p class="sub">还没有添加文件夹。</p>';
     for (const s of lib.sources) {
-      const name = s.path.split("/").filter(Boolean).pop() || s.path;
+      const name = sourceName(s);
       const active = i.folder === s.path && (i.state === "running" || i.state === "paused");
       const last = s.last_indexed ? new Date(s.last_indexed).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : null;
       let state;
       if (active) state = `<span class="state" style="color:var(--run-ink)">${i.kind === "tags" ? "生成标签中" : s.last_indexed ? "更新中" : "首次索引中"}</span>`;
       else if (!s.last_indexed) state = `<span class="state" style="color:var(--warn-ink)"><span class="dot" style="background:var(--warn-dot)"></span>还没索引完</span>`;
       else state = `<span class="state" style="color:var(--ok-ink)"><span class="dot" style="background:var(--ok-dot)"></span>已是最新</span>`;
-      h += `<section class="folder" aria-label="${esc(name)}"><div class="row"><h2>${esc(name)}</h2><span class="path">${esc(s.path)}</span><span class="grow"></span>${state}</div>`;
+      h += `<section class="folder" aria-label="${esc(name)}"><div class="row"><h2>${esc(name)}</h2><span class="path">${s.kind === "apple_notes" ? "每次更新时从“备忘录”应用同步（只读正文，不含附件和加锁的备忘录）" : esc(s.path)}</span><span class="grow"></span>${state}</div>`;
       if (active) {
         const pct = i.total ? Math.floor((i.done / i.total) * 100) : 0;
         h += `<div class="bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="索引进度"><div style="width:${pct}%"></div></div>
@@ -1510,6 +1528,7 @@
     }
     switch (d.action) {
       case "add": return addFolder();
+      case "add-notes": return addNotes();
       case "lib": return showView("lib");
       case "new": return newQuestion();
       case "update-all": { const r = await api("update_all"); toast(r.queued ? `${r.queued} 个文件夹已加入更新队列` : "已经在更新了"); return; }

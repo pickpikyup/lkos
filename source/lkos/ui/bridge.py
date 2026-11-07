@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import re
 import subprocess
@@ -26,6 +27,7 @@ from lkos.app import App
 from lkos.errors import Cancelled, LkosError
 from lkos.evaluation.evaluate import is_not_found
 from lkos.parsers.base import file_type_groups
+from lkos.sources import apple_notes
 from lkos.models_config import load_models, model_choices
 from lkos.ui.chat_api import ChatMixin
 from lkos.ui.models_api import ModelsMixin
@@ -380,7 +382,7 @@ class Bridge(ChatMixin, ModelsMixin):
             return {"stats": {"sources": s["sources"], "files": s["files_by_status"].get("indexed", 0),
                               "chunks": s["chunks_total"]},
                     "models": models, "model": self._app.cfg.tasks["knowledge_qa"].default_model,
-                    "history": self._app.repo.list_history(), "sources": self._app.repo.list_sources(),
+                    "history": self._app.repo.list_history(), "sources": self._sources(),
                     "index": self._indexer.state, "settings": dict(self._settings),
                     "file_types": file_type_groups(list(self._app.cfg.indexing.extensions)),
                     "choices": model_choices(load_models(self._app.home), self._app.cfg)}
@@ -624,7 +626,7 @@ class Bridge(ChatMixin, ModelsMixin):
                 problems.append({"path": f.path, "file": Path(f.path).name, "status": f.status,
                                  "hint": hint or (f"无法读取：{err}" if f.status == "failed" else err)})
             s = self._app.repo.stats()
-            return {"sources": self._app.repo.list_sources(), "problems": problems,
+            return {"sources": self._sources(), "problems": problems, "notes_available": apple_notes.available(),
                     "stats": {"sources": s["sources"], "files": s["files_by_status"].get("indexed", 0),
                               "chunks": s["chunks_total"]},
                     "index": self._indexer.state, "paused": self._indexer._paused.is_set(),
@@ -657,6 +659,29 @@ class Bridge(ChatMixin, ModelsMixin):
         self._indexer.enqueue(str(folder))
         self._emit({"type": "library_changed"})
         return {"ok": True, "folder": str(folder), "files": n}
+
+    def _sources(self) -> list[dict]:
+        """资料库里的来源；Mac 备忘录的导出文件夹标为 kind=apple_notes（界面上显示为“Mac 备忘录”）。"""
+        notes_dir = str(apple_notes.export_dir(self._app.home).resolve())
+        return [{**x, "kind": "apple_notes" if x["path"] == notes_dir else "folder"} for x in self._app.repo.list_sources()]
+
+    def add_notes(self) -> dict:
+        """添加 Mac 备忘录：导出到数据目录下的 apple-notes 文件夹，按普通文件夹索引（之后按周期自动同步）。"""
+        if not apple_notes.available():
+            return {"error": "只有 macOS 上才能读取备忘录"}
+        try:
+            stats = self._call(lambda: apple_notes.sync(self._app.home, self._app.indexer.notes_fetch))
+        except LkosError as e:
+            return {"error": str(e)}
+        folder = str(apple_notes.export_dir(self._app.home).resolve())
+        def add():
+            sid = self._app.repo.upsert_source(folder)
+            self._app.repo.update_source_settings(sid, refresh="daily")   # 备忘录改得勤：默认每天同步
+        self._call(add)
+        self._indexer.enqueue(folder)
+        self._emit({"type": "library_changed"})
+        log.info("已添加 Mac 备忘录：%d 条（跳过加锁或已删除的 %d 条）", stats["total"], stats["skipped"])
+        return {"ok": True, "folder": folder, **stats}
 
     def source_settings(self, source_id: int) -> dict:
         s = next((x for x in self._call(self._app.repo.list_sources) if x["id"] == int(source_id)), None)
@@ -817,6 +842,11 @@ class Bridge(ChatMixin, ModelsMixin):
 
     # ---------- 打开文件 ----------
     def open_file(self, path: str) -> dict:
+        notes_root = str(apple_notes.export_dir(self._app.home).resolve()) + os.sep
+        nid = apple_notes.note_id_for(self._app.home, str(path)) if str(path).startswith(notes_root) else None
+        if nid:                                   # 备忘录：在备忘录应用里显示这一条
+            problem = apple_notes.show_note(nid)
+            return {"error": problem} if problem else {"ok": True}
         problem = self._opener(str(path))
         return {"error": problem} if problem else {"ok": True}
 

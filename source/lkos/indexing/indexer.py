@@ -16,10 +16,12 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from lkos.config import Config, make_chunker
-from lkos.errors import EncryptedFileError, ParseError, UnsupportedFileError
+from lkos.errors import EncryptedFileError, LkosError, ParseError, UnsupportedFileError
 from lkos.indexing.chunker import Chunker
 from lkos.indexing.tokenize import to_fts_tokens
+from lkos.logs import get_logger
 from lkos.parsers import parse_file, parser_for
+from lkos.sources import apple_notes
 from lkos.storage.vectors import text_hash
 from lkos.storage.repository import IndexRun, Repository, now_iso
 from lkos.types import FileInfo, ProgressEvent
@@ -60,6 +62,9 @@ def norm_path(path: Path) -> str:
     return unicodedata.normalize("NFC", str(path))
 
 
+log = get_logger("index")
+
+
 def is_excluded(rel: Path, patterns: list[str]) -> bool:
     """排除规则：不含“/”的规则匹配任意一级的文件夹名或文件名（如“归档”“*草稿*”“*.tmp”）；
     含“/”的规则匹配相对文件夹根的路径（如“2019/*”“项目/旧版”）。不区分大小写。"""
@@ -85,6 +90,8 @@ class Indexer:
         self.chunker = chunker or make_chunker(cfg.indexing)
         self._ocr_engine = None
         self._ocr_resolved = False
+        self.home: Path | None = None        # 数据目录（Mac 备忘录导出在 <home>/apple-notes）
+        self.notes_fetch = None              # 读取备忘录的函数（测试可替换；默认用 osascript）
 
     @property
     def ocr_engine(self):
@@ -146,6 +153,13 @@ class Indexer:
         """gate：闲时索引闸门（lkos.indexing.scheduler.IndexGate），每个文件、每批向量前检查，条件不满足时暂停。"""
         t0 = time.perf_counter()
         folder = Path(folder).expanduser().resolve()
+        if self.home is not None and apple_notes.is_notes_dir(folder, self.home):
+            # Mac 备忘录：先把备忘录导出成 Markdown（只重写有变化的），再按普通文件夹索引
+            try:
+                stats = apple_notes.sync(self.home, self.notes_fetch)
+                log.info("备忘录已同步：%d 条，更新 %d、删除 %d", stats["total"], stats["written"], stats["removed"])
+            except LkosError as e:            # 读不到备忘录（没授权、不在 macOS）：照旧索引上次导出的内容
+                log.warning("同步备忘录失败，使用上次导出的内容：%s", e)
         if not folder.is_dir():
             raise ParseError(f"文件夹不存在：{folder}")
         source_id = self.repo.upsert_source(norm_path(folder))

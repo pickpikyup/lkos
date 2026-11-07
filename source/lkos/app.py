@@ -58,9 +58,11 @@ class App:
         gateway = ModelGateway(cfg, logger=repo, providers=providers)
         marker = ActivityMarker(home / "qa.active")
         retriever = Retriever(cfg, repo, gateway, marker=marker)
+        indexer = Indexer(cfg, repo, gateway)
+        indexer.home = home
         return cls(
             home=home, cfg=cfg, repo=repo, gateway=gateway,
-            indexer=Indexer(cfg, repo, gateway), retriever=retriever,
+            indexer=indexer, retriever=retriever,
             qa=QAService(cfg, retriever, gateway, marker=marker), marker=marker,
             summarizer=Summarizer(cfg, repo, gateway, marker=marker),
             extractor=Extractor(cfg, repo, retriever, gateway, marker=marker),

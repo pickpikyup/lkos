@@ -11,5 +11,6 @@
   <key>CFBundleVersion</key><string>3</string>
   <key>LSMinimumSystemVersion</key><string>12.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>NSAppleEventsUsageDescription</key><string>LKOS 需要读取“备忘录”的正文，把备忘录加入本机资料库（内容只保存在这台电脑上）。</string>
 </dict>
 </plist>

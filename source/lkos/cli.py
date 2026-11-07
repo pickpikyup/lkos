@@ -23,6 +23,8 @@ app.add_typer(source_app, name="source")
 daemon_app = typer.Typer(add_completion=False, no_args_is_help=True,
                          help="后台服务：关掉窗口后继续按周期更新索引（macOS，登录后自动运行）。")
 app.add_typer(daemon_app, name="daemon")
+notes_app = typer.Typer(add_completion=False, no_args_is_help=True, help="Mac 备忘录：导出并索引。")
+app.add_typer(notes_app, name="notes")
 tags_app = typer.Typer(add_completion=False, no_args_is_help=True, help="文件标签：查看、自动生成。")
 app.add_typer(tags_app, name="tags")
 console = Console()
@@ -164,6 +166,28 @@ def source_set(number: int = typer.Argument(..., min=1, help="编号（见 lkos 
     console.print(f"  排除规则：{'、'.join(s['exclude']['patterns']) or '无'}")
     console.print(f"  不索引类型：{'、'.join(s['exclude']['types']) or '无'}")
     console.print(f"  扫描件文字识别：{'开' if s['ocr'] else '关'}")
+
+
+@notes_app.command("add")
+def notes_add():
+    """把 Mac 备忘录加入资料库并索引（之后 lkos update 会一起同步）。第一次会请你允许访问“备忘录”。"""
+    from lkos.sources import apple_notes
+
+    try:
+        a = open_app()
+    except LkosError as e:
+        fail(e)
+    try:
+        stats = apple_notes.sync(a.home, a.indexer.notes_fetch)
+        console.print(f"已导出 {stats['total']} 条备忘录（跳过加锁或已删除的 {stats['skipped']} 条）。")
+        folder = apple_notes.export_dir(a.home).resolve()
+        a.repo.upsert_source(str(folder))
+        rep, gate = run_index(a, folder)
+    except LkosError as e:
+        fail(e)
+    finally:
+        a.close()
+    print_index_report(rep, gate)
 
 
 @tags_app.command("list")
