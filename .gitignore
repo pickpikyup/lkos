@@ -28,9 +28,15 @@ private/
 *.key
 *.numbers
 *.pages
-# 密钥与本机环境
+# 密钥与本机环境（在线模型的密钥保存在 data/models.json；放到别处的副本也一律忽略）
 .env
+.env.*
 *.pem
+models.json
+config.local.yaml
+# 日志与同步用的 git 包
+*.log
+*.bundle
 
 # ============================================================
 # 开发环境与生成文件
