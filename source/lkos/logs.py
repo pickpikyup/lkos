@@ -33,8 +33,10 @@ class RingHandler(logging.Handler):
             with self._lock2:
                 self.seq += 1
                 self.records.append({
-                    "seq": self.seq, "time": logging.Formatter().formatTime(record, "%H:%M:%S"),
-                    "ms": int(record.msecs), "level": record.levelname, "source": record.name.removeprefix("lkos."),
+                    "seq": self.seq, "date": logging.Formatter().formatTime(record, "%Y-%m-%d"),
+                    "time": logging.Formatter().formatTime(record, "%H:%M:%S"),
+                    "ms": int(record.msecs), "level": record.levelname,
+                    "key": logging.Formatter().formatTime(record, "%Y-%m-%d %H:%M:%S") + f",{int(record.msecs):03d}", "source": record.name.removeprefix("lkos."),
                     "msg": msg,
                 })
         except Exception:  # noqa: BLE001 - 日志本身不能让程序出错
@@ -79,6 +81,42 @@ def setup_logging(home: Path, level: int = logging.INFO) -> RingHandler:
 
     sys.excepthook = sys_hook
     return _ring
+
+
+_LINE = None
+
+
+def read_history(log_dir: Path, before: str, min_level: int = logging.DEBUG, limit: int = 300) -> tuple[list[dict], bool]:
+    """从日志文件（含滚动出去的 lkos.log.1 … .5）读 before（"YYYY-mm-dd HH:MM:SS,mmm"）之前的记录，
+    按时间从早到晚返回最后 limit 条；第二个值表示更早的还有没有。"""
+    import re
+
+    global _LINE
+    if _LINE is None:
+        _LINE = re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}),(\d{3}) (\w+)\s+(\S+?): (.*)$")
+    files = [Path(log_dir) / "lkos.log"] + [Path(log_dir) / f"lkos.log.{i}" for i in range(1, 10)]
+    out: list[dict] = []
+    for f in files:                      # 从最新的文件往前读，够了就停
+        if not f.exists():
+            continue
+        try:
+            text = f.read_text("utf-8", errors="replace")
+        except OSError:
+            continue
+        entries: list[dict] = []
+        for line in text.splitlines():
+            m = _LINE.match(line)
+            if m:
+                d, t, ms, lv, src, msg = m.groups()
+                entries.append({"date": d, "time": t, "ms": int(ms), "level": lv, "source": src.removeprefix("lkos."),
+                                "msg": msg, "key": f"{d} {t},{ms}"})
+            elif entries:
+                entries[-1]["msg"] += "\n" + line          # 出错时的调用栈等多行内容
+        keep = [e for e in entries if e["key"] < before and logging.getLevelName(e["level"]) >= min_level]
+        out = keep + out
+        if len(out) > limit:
+            return out[-limit:], True
+    return out, False
 
 
 def set_level(debug: bool) -> None:

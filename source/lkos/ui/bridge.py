@@ -977,12 +977,21 @@ class Bridge(ChatMixin, ModelsMixin):
         lines = self._ring.since(int(after or 0), LEVELS.get(str(level).upper(), 10))
         return {"lines": lines, "last": self._ring.seq, "file": str(self._app.home / "logs" / "lkos.log")}
 
-    def calls(self, limit: int = 100) -> list[dict]:
-        """最近的模型调用（来自 call_logs 表）：首字、总耗时、token、内存、错误。"""
-        rows = self._call(lambda: self._app.repo.recent_calls(limit=int(limit)))
-        keep = ("ts", "task", "model", "ttft_ms", "latency_ms", "input_tokens", "output_tokens",
+    def log_history(self, before: str | None = None, level: str = "DEBUG", limit: int = 300) -> dict:
+        """日志文件里更早的记录（往上滚动时加载），从早到晚。before 为当前最早一条的时间。"""
+        from lkos.logs import read_history
+
+        lines, more = read_history(self._app.home / "logs", before or "9999", LEVELS.get(str(level).upper(), 10),
+                                   int(limit))
+        return {"lines": lines, "more": more}
+
+    def calls(self, limit: int = 100, before_id: int | None = None, after_id: int | None = None) -> list[dict]:
+        """模型调用记录（来自 call_logs 表），从早到晚：首字、总耗时、token、内存、错误。
+        默认最近 limit 条；before_id 往前翻，after_id 取新增的。"""
+        rows = self._call(lambda: self._app.repo.recent_calls(limit=int(limit), before_id=before_id, after_id=after_id))
+        keep = ("id", "ts", "task", "model", "ttft_ms", "latency_ms", "input_tokens", "output_tokens",
                 "mem_available_mb", "swap_used_mb", "error")
-        return [{k: r.get(k) for k in keep} for r in rows]
+        return [{k: r.get(k) for k in keep} for r in reversed(rows)]
 
     def open_logs_folder(self) -> dict:
         folder = self._app.home / "logs"

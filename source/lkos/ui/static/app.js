@@ -10,7 +10,8 @@
     scope: { source_ids: [], file_types: [], days: 0, path: null, tags: [] }, scopeOpen: false, tags: [],
     thread: null, selTurn: null, choices: [], modelRef: "", attach: [], picker: null, autoKeyword: {},
     mcfg: null, modelEdit: null, modelList: null, consentOk: null, menu: null,
-    log: { tab: "run", after: 0, lines: [], level: "DEBUG", filter: "", file: "", warn: 0, calls: [] },
+    log: { tab: "run", after: 0, lines: [], level: "DEBUG", filter: "", file: "", warn: 0, calls: [],
+           histLoaded: false, histMore: true, histBusy: false, callsMore: true },
   };
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -1222,38 +1223,106 @@
   }
   function stopLogPolling() { clearInterval(logTimer); logTimer = null; }
 
+  // 日志页：两个标签都按时间从早到晚，最新的在底部；往上滚到顶时加载更早的记录
   let logBusy = false;
+  function nearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 60; }
+  function stickBottom(el, was) { if (was && $("log-auto").checked) el.scrollTop = el.scrollHeight; }
+
   async function pollLogs() {
     const L = S.log;
     if (logBusy) return;
     logBusy = true;
     try {
       if (L.tab === "calls" && S.view === "logs") {
-        L.calls = await api("calls", 100);
-        renderLogs();
+        const body = $("log-body"), was = nearBottom(body);
+        const lastId = L.calls.length ? L.calls[L.calls.length - 1].id : null;
+        const rows = lastId ? await api("calls", 200, null, lastId) : await api("calls", 100);
+        if (!lastId) { L.calls = rows; L.callsMore = rows.length >= 100; renderLogs(); body.scrollTop = body.scrollHeight; }
+        else if (rows.length) {
+          L.calls.push(...rows);
+          const tb = body.querySelector("tbody");
+          if (tb) { tb.insertAdjacentHTML("beforeend", rows.map(callRowHTML).join("")); stickBottom(body, was); } else renderLogs();
+        }
         return;
       }
       const r = await api("logs", L.after, L.level);
       L.file = r.file;
       if (r.lines.length) {
         L.lines.push(...r.lines);
-        if (L.lines.length > 3000) L.lines.splice(0, L.lines.length - 3000);
         L.after = r.lines[r.lines.length - 1].seq;
         if (S.view !== "logs") {
+          if (L.lines.length > 3000 && !L.histLoaded) L.lines.splice(0, L.lines.length - 3000);
           L.warn += r.lines.filter((x) => x.level === "WARNING" || x.level === "ERROR" || x.level === "CRITICAL").length;
           $("logs-badge").textContent = L.warn ? String(L.warn) : "";
         } else {
           appendLogLines(r.lines);
         }
       }
+      if (S.view === "logs" && L.tab === "run" && !L.histLoaded) { L.histLoaded = true; await loadOlderLogs(true); }
     } catch (e) { /* 窗口关闭或还没准备好 */ }
     finally { logBusy = false; }
   }
 
+  async function loadOlderLogs(first) {
+    const L = S.log, body = $("log-body");
+    if (L.histBusy || !L.histMore || L.tab !== "run") return;
+    L.histBusy = true;
+    try {
+      const before = L.lines.length ? (L.lines[0].key || "9999") : "9999";
+      const r = await api("log_history", before, L.level, 300);
+      L.histMore = r.more;
+      if (!r.lines.length) { renderLogs(); return; }
+      L.lines.unshift(...r.lines);
+      const h0 = body.scrollHeight, t0 = body.scrollTop;
+      renderLogs(true);
+      body.scrollTop = first ? body.scrollHeight : t0 + (body.scrollHeight - h0);   // 保持正在看的位置
+    } catch (e) { /* 忽略 */ }
+    finally { L.histBusy = false; }
+  }
+
+  async function loadOlderCalls() {
+    const L = S.log, body = $("log-body");
+    if (L.histBusy || !L.callsMore || !L.calls.length) return;
+    L.histBusy = true;
+    try {
+      const rows = await api("calls", 100, L.calls[0].id, null);
+      L.callsMore = rows.length >= 100;
+      if (!rows.length) { renderLogs(true); return; }
+      L.calls.unshift(...rows);
+      const h0 = body.scrollHeight, t0 = body.scrollTop;
+      renderLogs(true);
+      body.scrollTop = t0 + (body.scrollHeight - h0);
+    } finally { L.histBusy = false; }
+  }
+
+  function logTime(x) {
+    const today = new Date().toLocaleDateString("sv-SE");
+    return (x.date && x.date !== today ? x.date.slice(5) + " " : "") + `${x.time}.${String(x.ms).padStart(3, "0")}`;
+  }
+
   function logLineHTML(x) {
-    return `<div class="log-line lv-row-${x.level}"><span class="tm">${x.time}.${String(x.ms).padStart(3, "0")}</span>` +
+    return `<div class="log-line lv-row-${x.level}"><span class="tm" title="${esc(x.date || "")}">${logTime(x)}</span>` +
       `<span class="lv lv-${x.level}">${x.level === "WARNING" ? "WARN" : x.level}</span>` +
       `<span class="lsrc" title="${esc(x.source)}">${esc(x.source)}</span><span class="msg">${esc(x.msg)}</span></div>`;
+  }
+
+  function callTime(ts) {   // 数据库里是 UTC，显示成本机时间
+    if (!ts) return "";
+    const d = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : ts + "Z");
+    if (isNaN(d)) return ts.replace("T", " ").slice(5, 19);
+    const p = (n) => String(n).padStart(2, "0");
+    const today = new Date().toDateString() === d.toDateString();
+    return (today ? "" : `${p(d.getMonth() + 1)}-${p(d.getDate())} `) + `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
+  function callRowHTML(c) {
+    return `<tr><td>${esc(callTime(c.ts))}</td><td>${esc(c.task)}</td><td>${esc(c.model)}</td>
+        <td class="num">${c.ttft_ms != null ? (c.ttft_ms / 1000).toFixed(1) + " s" : "-"}</td>
+        <td class="num">${c.latency_ms != null ? (c.latency_ms / 1000).toFixed(1) + " s" : "-"}</td>
+        <td class="num">${c.input_tokens != null ? fmt(c.input_tokens) + " / " + fmt(c.output_tokens) : "-"}</td>
+        <td class="num">${c.mem_available_mb != null ? fmt(c.mem_available_mb) + " MB" : "-"}</td>
+        <td class="num">${c.swap_used_mb != null ? (c.swap_used_mb / 1024).toFixed(1) + " GB" : "-"}</td>
+        <td class="err">${esc(c.error || "")}</td></tr>`;
   }
 
   function matchFilter(x) {
@@ -1264,36 +1333,35 @@
   function appendLogLines(lines) {
     const body = $("log-body");
     if (!body || S.log.tab !== "run") return;
+    const was = nearBottom(body);
     const empty = body.querySelector(".log-empty");
     if (empty) empty.remove();
     body.insertAdjacentHTML("beforeend", lines.filter(matchFilter).map(logLineHTML).join(""));
-    while (body.children.length > 3000) body.firstChild.remove();
-    if ($("log-auto").checked) body.scrollTop = body.scrollHeight;
+    stickBottom(body, was);
     $("log-foot").textContent = `共 ${S.log.lines.length} 条 · 日志文件：${S.log.file}`;
   }
 
-  function renderLogs() {
+  function olderHTML(more) {
+    return `<div class="log-older">${more ? "往上滚动加载更早的记录" : "已经是最早的记录"}</div>`;
+  }
+
+  function renderLogs(keepScroll) {
     const L = S.log, body = $("log-body");
     L.warn = 0; $("logs-badge").textContent = "";
     document.querySelectorAll("[data-logtab]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.logtab === L.tab)));
     ["log-level", "log-filter", "log-clear"].forEach((id) => { $(id).disabled = L.tab !== "run"; });
     if (L.tab === "calls") {
-      const rows = L.calls.map((c) => `<tr><td>${esc((c.ts || "").replace("T", " ").slice(5, 19))}</td><td>${esc(c.task)}</td><td>${esc(c.model)}</td>
-        <td class="num">${c.ttft_ms != null ? (c.ttft_ms / 1000).toFixed(1) + " s" : "-"}</td>
-        <td class="num">${c.latency_ms != null ? (c.latency_ms / 1000).toFixed(1) + " s" : "-"}</td>
-        <td class="num">${c.input_tokens != null ? fmt(c.input_tokens) + " / " + fmt(c.output_tokens) : "-"}</td>
-        <td class="num">${c.mem_available_mb != null ? fmt(c.mem_available_mb) + " MB" : "-"}</td>
-        <td class="num">${c.swap_used_mb != null ? (c.swap_used_mb / 1024).toFixed(1) + " GB" : "-"}</td>
-        <td class="err">${esc(c.error || "")}</td></tr>`).join("");
-      body.innerHTML = L.calls.length ? `<table class="calls"><thead><tr><th>时间（UTC）</th><th>任务</th><th>模型</th><th>首字</th><th>总耗时</th><th>输入 / 输出 tokens</th><th>可用内存</th><th>交换区</th><th>错误</th></tr></thead><tbody>${rows}</tbody></table>`
+      body.innerHTML = L.calls.length ? `${olderHTML(L.callsMore)}<table class="calls"><thead><tr><th>时间</th><th>任务</th><th>模型</th><th>首字</th><th>总耗时</th><th>输入 / 输出 tokens</th><th>可用内存</th><th>交换区</th><th>错误</th></tr></thead><tbody>${L.calls.map(callRowHTML).join("")}</tbody></table>`
         : '<div class="log-empty">还没有模型调用记录。</div>';
-      $("log-foot").textContent = "最近 100 次模型调用（问答、计算向量），每秒刷新";
+      $("log-foot").textContent = "模型调用（问答、计算向量），从早到晚，最新的在底部；往上滚动看更早的";
+      if (!keepScroll) body.scrollTop = body.scrollHeight;
       return;
     }
     const lines = L.lines.filter(matchFilter);
-    body.innerHTML = lines.length ? lines.map(logLineHTML).join("") : '<div class="log-empty">暂时没有日志。提一个问题或更新索引，这里会实时出现记录。</div>';
-    if ($("log-auto").checked) body.scrollTop = body.scrollHeight;
-    $("log-foot").textContent = `共 ${L.lines.length} 条 · 日志文件：${L.file}`;
+    body.innerHTML = lines.length ? (L.histLoaded ? olderHTML(L.histMore) : "") + lines.map(logLineHTML).join("")
+      : '<div class="log-empty">暂时没有日志。提一个问题或更新索引，这里会实时出现记录。</div>';
+    if (!keepScroll) body.scrollTop = body.scrollHeight;
+    $("log-foot").textContent = `共 ${L.lines.length} 条 · 从早到晚，最新的在底部；往上滚动看更早的 · 日志文件：${L.file}`;
   }
 
   function sourceName(s) {
@@ -1651,11 +1719,18 @@
   $("btn-settings").addEventListener("click", () => showView("settings"));
   $("btn-logs").addEventListener("click", () => showView("logs"));
   document.querySelectorAll("[data-logtab]").forEach((b) => b.addEventListener("click", () => {
-    S.log.tab = b.dataset.logtab; renderLogs(); pollLogs();
+    S.log.tab = b.dataset.logtab; if (S.log.tab === "calls") { S.log.calls = []; S.log.callsMore = true; } renderLogs(); pollLogs();
   }));
-  $("log-level").addEventListener("change", (e) => { S.log.level = e.target.value; S.log.after = 0; S.log.lines = []; renderLogs(); pollLogs(); });
+  $("log-level").addEventListener("change", (e) => {
+    Object.assign(S.log, { level: e.target.value, after: 0, lines: [], histLoaded: false, histMore: true });
+    renderLogs(); pollLogs();
+  });
+  $("log-body").addEventListener("scroll", (e) => {
+    if (e.target.scrollTop > 40 || S.view !== "logs") return;
+    if (S.log.tab === "calls") loadOlderCalls(); else loadOlderLogs(false);
+  });
   $("log-filter").addEventListener("input", (e) => { S.log.filter = e.target.value; renderLogs(); });
-  $("log-clear").addEventListener("click", () => { S.log.lines = []; renderLogs(); });
+  $("log-clear").addEventListener("click", () => { S.log.lines = []; S.log.histMore = false; renderLogs(); });
   $("log-copy").addEventListener("click", () => {
     if (S.log.tab === "calls") return copy(JSON.stringify(S.log.calls, null, 2));
     copy(S.log.lines.filter(matchFilter).map((x) => `${x.time}.${String(x.ms).padStart(3, "0")} ${x.level} ${x.source}: ${x.msg}`).join("\n"));

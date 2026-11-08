@@ -135,3 +135,36 @@ def test_dev_mode_setting_and_logs(bridge, corpus, tmp_path):
     calls = bridge.calls(10)
     assert calls and {"ttft_ms", "mem_available_mb", "error"} <= set(calls[0])
     assert bridge.open_logs_folder() == {"ok": True}
+
+
+def test_log_history_and_calls_paging(tmp_path):
+    """日志页：日志文件（含滚动出去的旧文件）按时间从早到晚往前翻；模型调用记录从早到晚、可往前翻、取新增。"""
+    import logging
+
+    from lkos.logs import read_history
+
+    d = tmp_path / "logs"
+    d.mkdir()
+    (d / "lkos.log.1").write_text("2026-11-07 10:00:00,001 INFO    lkos.ui: 最早\n"
+                                  "2026-11-07 10:00:01,002 DEBUG   lkos.index: 调试\n", "utf-8")
+    (d / "lkos.log").write_text("2026-11-08 09:00:00,000 ERROR   lkos.index: 出错\nTraceback (most recent call last):\n"
+                                "  File x\n2026-11-08 09:00:05,000 INFO    lkos.ui: 最新\n", "utf-8")
+    lines, more = read_history(d, "9999")
+    assert [x["msg"].split("\n")[0] for x in lines] == ["最早", "调试", "出错", "最新"] and not more
+    assert lines[2]["msg"].endswith("File x") and lines[0]["source"] == "ui" and lines[0]["date"] == "2026-11-07"
+    lines, more = read_history(d, "2026-11-08 09:00:05,000", limit=2)
+    assert [x["msg"][:2] for x in lines] == ["调试", "出错"] and more
+    assert [x["msg"] for x in read_history(d, "9999", logging.INFO)[0]][0] == "最早"
+    assert len(read_history(d, "9999", logging.INFO)[0]) == 3
+
+
+def test_calls_ascending_paging(bridge):
+    from lkos.types import CallLog
+
+    repo = bridge._app.repo
+    for i in range(5):
+        bridge._call(lambda i=i: repo.log_call(CallLog(task="knowledge_qa", provider="test", model=f"m{i}", latency_ms=i)))
+    calls = bridge.calls(3)
+    assert [c["model"] for c in calls] == ["m2", "m3", "m4"]                   # 最近 3 条，从早到晚
+    assert [c["model"] for c in bridge.calls(3, calls[0]["id"])] == ["m0", "m1"]
+    assert bridge.calls(10, None, calls[-1]["id"]) == []

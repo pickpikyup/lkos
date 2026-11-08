@@ -679,11 +679,21 @@ class Repository:
         rows = self.conn.execute("SELECT * FROM files WHERE status IN ('failed', 'skipped') ORDER BY path")
         return [self._file(r) for r in rows]
 
-    def recent_calls(self, task: str | None = None, limit: int = 1000) -> list[dict]:
-        sql, params = "SELECT * FROM call_logs", []
+    def recent_calls(self, task: str | None = None, limit: int = 1000, before_id: int | None = None,
+                     after_id: int | None = None) -> list[dict]:
+        """最近的模型调用，新的在前；before_id / after_id 用于往前翻、取新增的。"""
+        sql, where, params = "SELECT * FROM call_logs", [], []
         if task:
-            sql += " WHERE task = ?"
+            where.append("task = ?")
             params.append(task)
+        if before_id:
+            where.append("id < ?")
+            params.append(int(before_id))
+        if after_id:
+            where.append("id > ?")
+            params.append(int(after_id))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY id DESC LIMIT ?"
         params.append(limit)
         return [dict(r) for r in self.conn.execute(sql, params)]
