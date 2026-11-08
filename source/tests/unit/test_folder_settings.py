@@ -162,3 +162,33 @@ def test_index_worker_survives_unexpected_error(tmp_path, docs):
             br.IndexWorker._index = real_index
     finally:
         b._close()
+
+
+def test_background_refresh_waits_for_idle_until_run_now(tmp_path, docs, monkeypatch):
+    """后台定期更新等电脑空闲；点“现在就更新”后不再等。从没索引完的文件夹打开应用时直接接着做。"""
+    from lkos.indexing.scheduler import IndexGate
+
+    monkeypatch.setattr(IndexGate, "blocker", lambda self: "busy")       # 一直在用电脑
+    b = Bridge(home=tmp_path / "h", overrides=fake_overrides(), providers={"test": FakeProvider("test", dim=TEST_DIM)},
+               auto_refresh=False)
+    try:
+        def wait(cond, t=10):
+            end = time.time() + t
+            while time.time() < end and not cond():
+                time.sleep(0.05)
+            return cond()
+
+        b._call(lambda: b._app.repo.upsert_source(str(docs)))          # 添加了但从没索引完
+        b._call(lambda: b._indexer._enqueue_stale(b._app))
+        assert wait(lambda: "indexed" in (b._indexer.state.get("last") or {}))   # 不等空闲，直接做完
+        b._indexer.enqueue(str(docs), background=True)                  # 定期更新：等空闲
+        assert wait(lambda: b._indexer.state["state"] == "paused" and b._indexer.state["reason"] == "busy")
+        b._indexer.state["last"] = None
+        assert b.run_now_index()["ok"]
+        assert wait(lambda: "indexed" in (b._indexer.state.get("last") or {}) and b._indexer.state["state"] == "idle"
+                    and b._indexer._jobs.empty()), b._indexer.state      # 排队的（含生成标签）都做完
+        assert wait(lambda: not b._indexer._run_now.is_set())            # 之后恢复为等空闲
+        b._indexer.enqueue(str(docs), background=True)
+        assert wait(lambda: b._indexer.state["state"] == "paused")
+    finally:
+        b._close()

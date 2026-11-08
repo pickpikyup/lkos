@@ -96,7 +96,9 @@ class _Gate:
             return "manual"
         if self.marker.is_active():
             return "qa"
-        return self.inner.blocker() if self.inner is not None else None
+        if self.inner is None or self.w._run_now.is_set():   # 用户点了“现在就更新”：不等空闲和电源
+            return None
+        return self.inner.blocker()
 
     def wait(self) -> None:
         last = None
@@ -128,6 +130,7 @@ class IndexWorker:
         self._jobs: queue.Queue = queue.Queue()
         self._paused = threading.Event()
         self._cancel = threading.Event()
+        self._run_now = threading.Event()
         self._lock = threading.Lock()
         self._queued: list[str] = []
         self._auto = auto_refresh
@@ -162,6 +165,11 @@ class IndexWorker:
             self._set(state="paused", reason="manual")
 
     def resume(self) -> None:
+        self._paused.clear()
+
+    def run_now(self) -> None:
+        """排队的后台任务不再等电脑空闲、接通电源，马上做完（做完队列后恢复为等空闲）。"""
+        self._run_now.set()
         self._paused.clear()
 
     def cancel(self, folder: str | None = None) -> None:
@@ -222,6 +230,8 @@ class IndexWorker:
                     self._set(state="idle", reason=None, folder=None, done=0, total=0, file=None, kind=None,
                               last={"folder": folder, "error": f"出错了：{e}"})
                     self._emit({"type": "library_changed"})
+                if self._jobs.empty():
+                    self._run_now.clear()        # 排队的都做完了：之后的定期更新恢复为等空闲
         finally:
             app.close()
 
@@ -233,7 +243,8 @@ class IndexWorker:
         except Exception as e:  # noqa: BLE001
             log.warning("检查改名的文件夹时出错：%s", e)
         for s in due_sources(app.repo.list_sources()):
-            self.enqueue(s["path"], background=True)
+            # 从没索引完的（刚添加、或上次中途退出）接着做，不等空闲；已索引过的定期更新才等空闲、接通电源
+            self.enqueue(s["path"], background=bool(s.get("last_indexed")))
 
     def _index(self, app: App, folder: str, background: bool) -> None:
         self._cancel.clear()
@@ -889,11 +900,19 @@ class Bridge(ChatMixin, ModelsMixin):
         return daemon_mod.status(self._app.home)
 
     def update_source(self, path: str) -> dict:
-        return {"ok": self._indexer.enqueue(str(path))}
+        ok = self._indexer.enqueue(str(path))
+        if self._indexer.state.get("folder") == str(path):
+            self._indexer.run_now()                  # 正在后台等空闲的就是它：马上进行
+        return {"ok": ok}
+
+    def run_now_index(self) -> dict:
+        self._indexer.run_now()
+        return {"ok": True}
 
     def update_all(self) -> dict:
         sources = self._call(self._app.repo.list_sources)
         queued = [s["path"] for s in sources if Path(s["path"]).is_dir() and self._indexer.enqueue(s["path"])]
+        self._indexer.run_now()
         return {"queued": len(queued)}
 
     def remove_source(self, source_id: int) -> dict:

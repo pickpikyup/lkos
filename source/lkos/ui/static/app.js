@@ -161,7 +161,7 @@
   }
 
   const REASON = {
-    qa: "正在问答，答完自动继续", manual: "已手动暂停", busy: "你正在使用电脑，空闲后自动继续",
+    qa: "正在问答，答完自动继续", manual: "已手动暂停", busy: "你在用电脑，停手 2 分钟后自动继续",
     battery: "正在用电池，接通电源后继续", daemon: "后台服务正在索引，等它做完当前文件",
   };
 
@@ -174,8 +174,10 @@
     } else if (i.state === "running") {
       cls = "running"; h = "后台索引中"; d = `${name} · ${fmt(i.done)} / ${fmt(i.total)} 个文件`;
     } else if (i.state === "paused") {
-      cls = "paused"; h = "后台索引已暂停"; d = REASON[i.reason] || "";
+      cls = "paused"; h = i.kind === "tags" ? "生成标签已暂停" : "后台更新在等空闲"; d = REASON[i.reason] || "";
+      if (i.reason === "manual") h = "索引已暂停";
       if (i.total) d += ` · ${Math.floor((i.done / i.total) * 100)}%`;
+      if (i.reason === "busy" || i.reason === "battery") d += " · 点这里现在就更新";
     } else if (i.state === "error") {
       cls = "error"; h = "索引出错"; d = i.reason || "";
     } else if (!S.sources.length) {
@@ -1403,7 +1405,8 @@
           <div class="facts"><span>${fmt(i.done)} / ${fmt(i.total)} 个文件</span><span>已可检索 ${fmt(s.chunks)} 个文本块</span><span>最近修改的文件优先</span>${i.file ? `<span class="path">${esc(i.file)}</span>` : ""}</div>`;
         if (i.state === "paused") {
           h += `<div class="pausebox"><span class="dot" aria-hidden="true"></span><span class="t">已暂停：${esc(REASON[i.reason] || "")}</span>
-            ${i.reason === "manual" ? '<button type="button" class="btn small" data-action="resume">继续</button>' : ""}</div>`;
+            ${i.reason === "manual" ? '<button type="button" class="btn small" data-action="resume">继续</button>' : ""}
+            ${i.reason === "busy" || i.reason === "battery" ? '<button type="button" class="btn small primary" data-action="run-now">现在就更新</button>' : ""}</div>`;
         }
       } else {
         h += `<div class="facts"><span>${fmt(s.files)} 个文件</span><span>${fmt(s.chunks)} 个文本块</span>
@@ -1618,6 +1621,7 @@
     switch (d.action) {
       case "add": return addFolder();
       case "add-notes": return addNotes();
+      case "run-now": await api("run_now_index"); toast("好的，现在就更新（问答时仍会自动让路）"); return;
       case "vault-open": S.vaultOpen = true; return renderLib();
       case "vault-close": S.vaultOpen = false; return renderLib();
       case "survey": S.surveyPrev = null; return runSurvey(() => api("survey"));
@@ -1657,7 +1661,13 @@
     copy(S.log.lines.filter(matchFilter).map((x) => `${x.time}.${String(x.ms).padStart(3, "0")} ${x.level} ${x.source}: ${x.msg}`).join("\n"));
   });
   $("log-folder").addEventListener("click", openLogsFolder);
-  $("status-card").addEventListener("click", () => (S.sources.length ? showView("lib") : addFolder()));
+  $("status-card").addEventListener("click", async () => {
+    const i = S.index || {};
+    if (i.state === "paused" && (i.reason === "busy" || i.reason === "battery")) {
+      await api("run_now_index"); toast("好的，现在就更新（问答时仍会自动让路）");
+    }
+    return S.sources.length ? showView("lib") : addFolder();
+  });
   $("btn-new").addEventListener("click", newQuestion);
   $("btn-add-side").addEventListener("click", addFolder);
   $("btn-stop").addEventListener("click", () => api("stop"));
