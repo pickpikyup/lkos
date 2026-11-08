@@ -276,6 +276,9 @@ class IndexWorker:
                 if self.state["state"] == "paused":
                     self._set(state="running", reason=None)
             rep = app.indexer.index_folder(path, on_progress=on_progress, gate=_Gate(self, app, background))
+            src = app.repo.source_settings(str(path.resolve()))
+            if src:
+                app.repo.set_meta(f"pending_settings:{src['id']}", "")      # 新设置已生效
             last = {"folder": folder, "indexed": rep.files_indexed, "failed": rep.files_failed,
                     "removed": rep.files_removed, "chunks": rep.chunks_added, "seconds": rep.seconds}
             ilog.info("索引完成 %s：新索引 %d、失败 %d、删除 %d、新增文本块 %d（复用向量 %d）、用时 %.1f 秒"
@@ -655,13 +658,17 @@ class Bridge(ChatMixin, ModelsMixin):
         def run():
             relocated = self._relocate()
             problems = []
+            srcs = {x["id"]: x for x in self._app.repo.list_sources()}
             for f in self._app.repo.failed_files():
                 err = f.error or ""
                 hint = next((v for k, v in PROBLEM_HINTS.items() if err.startswith(k) and v), None)
                 if hint is None and err.startswith("unsupported: "):
                     hint = err.removeprefix("unsupported: ")
+                src = srcs.get(f.source_id) or {}
                 problems.append({"path": f.path, "file": Path(f.path).name, "status": f.status,
-                                 "hint": hint or (f"无法读取：{err}" if f.status == "failed" else err)})
+                                 "hint": hint or (f"无法读取：{err}" if f.status == "failed" else err),
+                                 "source_id": f.source_id, "scanned": err.startswith("no extractable text"),
+                                 "ocr_on": bool(src.get("ocr"))})
             s = self._app.repo.stats()
             return {"sources": self._sources(), "problems": problems, "notes_available": apple_notes.available(),
                     "stats": {"sources": s["sources"], "files": s["files_by_status"].get("indexed", 0),
@@ -713,7 +720,8 @@ class Bridge(ChatMixin, ModelsMixin):
             if path == notes_dir:
                 return "apple_notes"
             return "obsidian" if obsidian.is_vault(path) else "folder"
-        return [{**x, "kind": kind(x["path"]), "missing": x["path"] != notes_dir and not Path(x["path"]).is_dir()}
+        return [{**x, "kind": kind(x["path"]), "missing": x["path"] != notes_dir and not Path(x["path"]).is_dir(),
+                 "pending": self._app.repo.get_meta(f"pending_settings:{x['id']}") or ""}
                 for x in self._app.repo.list_sources()]
 
     def relocate_to(self, source_id: int, path: str) -> dict:
@@ -833,7 +841,8 @@ class Bridge(ChatMixin, ModelsMixin):
         self._call(add)
         self._indexer.enqueue(folder)
         self._emit({"type": "library_changed"})
-        log.info("已添加 Mac 备忘录：%d 条（跳过加锁或已删除的 %d 条）", stats["total"], stats["skipped"])
+        log.info("已添加 Mac 备忘录：%d 条（跳过共享的 %d 条、加锁或已删除的 %d 条）", stats["total"],
+                 stats.get("shared", 0), stats["skipped"])
         return {"ok": True, "folder": folder, **stats}
 
     def source_settings(self, source_id: int) -> dict:
@@ -844,8 +853,9 @@ class Bridge(ChatMixin, ModelsMixin):
                 "allow_online": s["allow_online"], "ocr_available": ocr_available()}
 
     def set_source_settings(self, source_id: int, settings: dict) -> dict:
-        """settings：{"refresh", "exclude": {"patterns", "types"}, "ocr"}，只改给出的项。
-        排除规则或文字识别有变化时自动重新索引这个文件夹（被排除的文件会从索引里去掉）。"""
+        """settings：{"refresh", "exclude": {"patterns", "types"}, "ocr", "allow_online"}，只改给出的项。
+        排除规则或文字识别有变化时，要更新索引才生效：不自动开始，返回 reindex 和预计的工作量，由界面询问
+        “现在更新 / 稍后”；没更新前文件夹上一直提示（下次自动更新时也会按新设置处理）。"""
         before = self.source_settings(source_id)
         if "error" in before:
             return before
@@ -857,13 +867,27 @@ class Bridge(ChatMixin, ModelsMixin):
         except ValueError as e:
             return {"error": str(e)}
         after = self.source_settings(source_id)
-        reindex = after["exclude"] != before["exclude"] or after["ocr"] != before["ocr"]
+        changes = []
+        if after["exclude"] != before["exclude"]:
+            changes.append("排除规则")
+        if after["ocr"] != before["ocr"]:
+            changes.append("打开文字识别" if after["ocr"] else "关闭文字识别")
+        reindex = bool(changes) and Path(after["path"]).is_dir()
         log.info("文件夹设置已保存：%s：更新周期 %s，排除 %s，文字识别 %s%s", after["path"], after["refresh"],
-                 after["exclude"], "开" if after["ocr"] else "关", "，重新索引" if reindex else "")
-        if reindex and Path(after["path"]).is_dir():
-            self._indexer.enqueue(after["path"])
+                 after["exclude"], "开" if after["ocr"] else "关", "，需要更新索引才生效" if reindex else "")
+        info = {}
+        if reindex:
+            def work():
+                files = self._app.repo.files_of_source(int(source_id))
+                pdfs = [f for f in files if f.file_type == "pdf"]
+                scanned = [f for f in pdfs if (f.error or "").startswith("no extractable text")]
+                prev = self._app.repo.get_meta(f"pending_settings:{int(source_id)}") or ""
+                merged = "、".join(dict.fromkeys([x for x in prev.split("、") if x] + changes))
+                self._app.repo.set_meta(f"pending_settings:{int(source_id)}", merged)
+                return {"pdfs": len(pdfs), "scanned": len(scanned), "changes": merged}
+            info = self._call(work)
         self._emit({"type": "library_changed"})
-        return {**after, "reindex": reindex}
+        return {**after, "reindex": reindex, **info}
 
     # ---------- 标签 ----------
     def tags(self, limit: int = 200) -> list[dict]:

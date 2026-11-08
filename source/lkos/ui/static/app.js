@@ -1364,6 +1364,15 @@
     $("log-foot").textContent = `共 ${L.lines.length} 条 · 从早到晚，最新的在底部；往上滚动看更早的 · 日志文件：${L.file}`;
   }
 
+  function pendingText(r) {
+    let t = `设置已改（${r.changes}），更新这个文件夹的索引后才生效。`;
+    if (/打开文字识别/.test(r.changes || "") && r.pdfs) {
+      t += r.scanned ? `会重新检查 ${fmt(r.pdfs)} 个 PDF，其中 ${fmt(r.scanned)} 个扫描件要做文字识别（每页约 1–2 秒）。`
+        : `会重新检查 ${fmt(r.pdfs)} 个 PDF，里面没有文字的页面会做文字识别。`;
+    }
+    return t;
+  }
+
   function sourceName(s) {
     return s.kind === "apple_notes" ? "Mac 备忘录" : (s.path.split("/").filter(Boolean).pop() || s.path);
   }
@@ -1437,7 +1446,8 @@
       const r = await api("add_notes");
       if (r.busy) { toast("正在读取备忘录，请稍候"); return; }
       if (r.error) { toast(r.error); return; }
-      toast(`已添加 Mac 备忘录：${fmt(r.total)} 条，开始索引`);
+      const skip = [r.shared ? `共享的 ${fmt(r.shared)} 条` : "", r.skipped ? `加锁或已删除的 ${fmt(r.skipped)} 条` : ""].filter(Boolean).join("、");
+      toast(`已添加 Mac 备忘录：${fmt(r.total)} 条，开始索引${skip ? "（不包括" + skip + "）" : ""}`);
     } finally { S.notesBusy = false; refreshLibrary(); }
   }
 
@@ -1465,8 +1475,9 @@
       if (s.missing) state = `<span class="state" style="color:var(--warn-ink)"><span class="dot" style="background:var(--warn-dot)"></span>找不到文件夹</span>`;
       else if (active) state = `<span class="state" style="color:var(--run-ink)">${i.kind === "tags" ? "生成标签中" : s.last_indexed ? "更新中" : "首次索引中"}</span>`;
       else if (!s.last_indexed) state = `<span class="state" style="color:var(--warn-ink)"><span class="dot" style="background:var(--warn-dot)"></span>还没索引完</span>`;
+      else if (s.pending) state = `<span class="state" style="color:var(--warn-ink)"><span class="dot" style="background:var(--warn-dot)"></span>设置待生效</span>`;
       else state = `<span class="state" style="color:var(--ok-ink)"><span class="dot" style="background:var(--ok-dot)"></span>已是最新</span>`;
-      h += `<section class="folder" aria-label="${esc(name)}"><div class="row"><h2>${esc(name)}</h2><span class="path">${s.kind === "apple_notes" ? "每次更新时从“备忘录”应用同步（只读正文，不含附件和加锁的备忘录）" : (s.kind === "obsidian" ? "Obsidian 仓库 · " : "") + esc(s.path)}</span><span class="grow"></span>${state}</div>`;
+      h += `<section class="folder" aria-label="${esc(name)}"><div class="row"><h2>${esc(name)}</h2><span class="path">${s.kind === "apple_notes" ? "每次更新时从“备忘录”应用同步（只读正文；不含附件、加锁的和共享的备忘录）" : (s.kind === "obsidian" ? "Obsidian 仓库 · " : "") + esc(s.path)}</span><span class="grow"></span>${state}</div>`;
       if (s.missing) {
         h += `<p class="sub" style="margin:0">原来的位置已经没有这个文件夹了：可能改了名、移到了别处，或在没接上的外接硬盘里。
           在原位置附近改名、移动的，LKOS 会自动认出来；认不出来时点“重新定位”选它现在的位置，索引和设置都会保留，不用重建。
@@ -1491,6 +1502,12 @@
           ${s.files ? `<span>标签 ${fmt(s.tagged)} / ${fmt(s.files - s.failed)} 个文件</span>` : ""}</div>`;
       }
       if (S.libEdit === s.id) h += folderSettingsHTML(s, lib.ocr_available);
+      if (s.pending && !active && !s.missing) {
+        const ask = S.pendingAsk && S.pendingAsk.id === s.id;
+        h += `<div class="pending ${ask ? "ask" : ""}" role="${ask ? "alert" : "note"}"><span class="t">${esc(ask ? S.pendingAsk.text : `设置已改（${s.pending}），还没按新设置更新索引；下次自动更新时也会生效。`)}</span>
+          <button type="button" class="btn small primary" data-apply-now="${esc(s.path)}">现在更新</button>
+          ${ask ? '<button type="button" class="btn small" data-action="pending-later">稍后</button>' : ""}</div>`;
+      }
       const confirming = S.confirmRemove === s.id;
       h += `<div class="row" style="align-items:center">
         <span class="grow"></span>
@@ -1509,7 +1526,17 @@
     if (lib.problems.length) {
       h += `<section aria-label="需要处理的文件" style="display:flex;flex-direction:column;gap:8px"><h2 class="sec-title">需要处理的文件（${lib.problems.length}）</h2><div class="problems">`;
       for (const p of lib.problems.slice(0, 100)) {
-        h += `<span class="f">${esc(p.file)}</span><span class="h">${esc(p.hint)}</span><button type="button" class="btn small" data-reveal="${esc(p.path)}">在访达中显示</button>`;
+        const src = lib.sources.find((x) => x.id === p.source_id);
+        let ocr = "";
+        if (p.scanned && lib.ocr_available) {
+          ocr = !p.ocr_on ? `<button type="button" class="btn small primary" data-enable-ocr="${p.source_id}">打开文字识别</button>`
+            : src && src.pending ? `<button type="button" class="btn small primary" data-apply-now="${esc(src.path)}">现在识别</button>`
+            : "";
+        }
+        const hint = !(p.scanned && p.ocr_on) ? p.hint
+          : src && src.pending ? "文字识别已打开：点“现在识别”，或等下次更新这个文件夹时识别"
+          : "已做过文字识别，仍没认出文字（可能是图片、照片或字迹太模糊）";
+        h += `<span class="f">${esc(p.file)}</span><span class="h">${esc(hint)}</span><span class="acts">${ocr}<button type="button" class="btn small" data-reveal="${esc(p.path)}">在访达中显示</button></span>`;
       }
       h += "</div></section>";
     }
@@ -1552,7 +1579,10 @@
     const r = await api("set_source_settings", id, settings);
     if (r.error) { toast(r.error); return; }
     S.libEdit = null;
-    toast(r.reindex ? "已保存，正在按新设置重新索引" : "已保存");
+    if (r.reindex) {
+      S.pendingAsk = { id: r.id, text: pendingText(r) };
+      toast("已保存。更新索引后新设置才生效");
+    } else toast("已保存");
     refreshLibrary();
   }
 
@@ -1668,6 +1698,14 @@
     if (d.scopeClearFile) { S.scope.path = null; return renderScope(); }
     if (d.copySrc) { const s = currentSources().find((x) => x.n === Number(d.copySrc)); if (s) copy(s.text); return; }
     if (d.update) { await api("update_source", d.update); toast("已加入更新队列"); return; }
+    if (d.enableOcr) {
+      const r = await api("set_source_settings", Number(d.enableOcr), { ocr: true });
+      if (r.error) { toast(r.error); return; }
+      S.pendingAsk = r.reindex ? { id: r.id, text: pendingText(r) } : null;
+      toast(`已为“${r.path.split("/").pop()}”打开文字识别（在本机离线进行），点“现在更新”开始识别`);
+      return refreshLibrary();
+    }
+    if (d.applyNow) { S.pendingAsk = null; await api("update_source", d.applyNow); toast("开始按新设置更新索引"); return refreshLibrary(); }
     if (d.relocate) {
       const r = await api("choose_relocate", Number(d.relocate));
       if (r.cancelled) return;
@@ -1693,6 +1731,7 @@
     switch (d.action) {
       case "add": return addFolder();
       case "add-notes": return addNotes();
+      case "pending-later": S.pendingAsk = null; toast("好的，下次自动更新时按新设置处理，也可以随时点“现在更新”"); return renderLib();
       case "run-now": await api("run_now_index"); toast("好的，现在就更新（问答时仍会自动让路）"); return;
       case "vault-open": S.vaultOpen = true; return renderLib();
       case "vault-close": S.vaultOpen = false; return renderLib();

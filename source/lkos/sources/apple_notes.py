@@ -6,7 +6,7 @@
 
 - 导出到 <数据目录>/apple-notes/<账户>/<文件夹>/<标题>.md（data/ 不进 Git，内容不离开本机）；
 - 只重写有变化的备忘录，文件修改时间设为备忘录的修改时间；删掉的备忘录对应的文件一并删除；
-- 加了锁的备忘录、“最近删除”里的备忘录不导出；附件（图片、PDF 等）暂不导出，只保留正文文字；
+- 加了锁的备忘录、共享的备忘录（含共享文件夹里的）、“最近删除”里的备忘录不导出；附件（图片、PDF 等）暂不导出，只保留正文文字；
 - manifest.json 记下文件与备忘录 ID 的对应，“打开”时直接在备忘录应用里显示那一条。
 """
 
@@ -66,6 +66,11 @@ for (const f of app.folders()) {
   const names = n.name(), mods = n.modificationDate(), created = n.creationDate();
   let locked = [];
   try { locked = n.passwordProtected(); } catch (e) { locked = ids.map(() => false); }
+  // 共享的备忘录（自己共享给别人的、别人共享进来的，以及共享文件夹里的）：不导出
+  let folderShared = false;
+  try { folderShared = !!f.shared(); } catch (e) {}
+  let shared = [];
+  try { shared = n.shared(); } catch (e) { shared = ids.map(() => false); }
   let bodies = [];
   try { bodies = n.body(); } catch (e) {
     // 有加锁的备忘录时整批取正文可能失败：改为逐条取，取不到的留空
@@ -75,8 +80,9 @@ for (const f of app.folders()) {
     let m = '', c = '';
     try { m = mods[i].toISOString(); } catch (e) {}
     try { c = created[i].toISOString(); } catch (e) {}
+    const sh = folderShared || !!shared[i];
     out.push({ id: String(ids[i]), name: String(names[i] || ''), path: path, modified: m, created: c,
-               locked: !!locked[i], body: locked[i] ? '' : String(bodies[i] || '') });
+               locked: !!locked[i], shared: sh, body: (locked[i] || sh) ? '' : String(bodies[i] || '') });
   }
 }
 // 结果直接以 UTF-8 写进文件：不经过 osascript 的标准输出（中文、表情符号在那里可能被转码弄坏）
@@ -269,12 +275,15 @@ def _sync(home: Path, fetch: Callable[[], list[dict]] | None = None) -> dict:
     new: dict[str, dict] = {}
     used: set[str] = set()
     old_files = {v.get("file") for v in old.values()}
-    written = skipped = 0
+    written = skipped = shared = 0
     # 先给已有的备忘录保留原来的文件名，避免标题相同的两条互换文件
     ordered = sorted(notes, key=lambda n: (n.get("id") not in old, n.get("created") or ""))
     for n in ordered:
         nid = str(n.get("id") or "")
         folder = [str(x) for x in n.get("path") or []]
+        if n.get("shared"):                      # 共享的备忘录不导出（别人也能看、能改，不算你的资料）
+            shared += 1
+            continue
         if not nid or n.get("locked") or (folder and folder[-1] in TRASH_NAMES):
             skipped += 1
             continue
@@ -321,7 +330,7 @@ def _sync(home: Path, fetch: Callable[[], list[dict]] | None = None) -> dict:
             pass
     (root / MANIFEST).write_text(json.dumps({"notes": new, "synced_at": datetime.now().isoformat(timespec="seconds")},
                                             ensure_ascii=False, indent=1), "utf-8")
-    return {"written": written, "removed": removed, "skipped": skipped, "total": len(new)}
+    return {"written": written, "removed": removed, "skipped": skipped, "shared": shared, "total": len(new)}
 
 
 def show_note(note_id: str) -> str | None:

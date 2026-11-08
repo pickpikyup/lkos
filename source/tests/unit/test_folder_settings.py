@@ -82,7 +82,14 @@ def test_bridge_folder_settings(tmp_path, docs):
         assert r["refresh"] == "daily" and r["reindex"] is False
         assert b.set_source_settings(sid, {"refresh": "yearly"})["error"]
         r = b.set_source_settings(sid, {"exclude": {"patterns": ["归档"], "types": []}})
-        assert r["reindex"] is True and r["exclude"]["patterns"] == ["归档"]
+        assert r["reindex"] is True and r["exclude"]["patterns"] == ["归档"] and r["changes"] == "排除规则"
+        time.sleep(0.5)
+        files = b._call(lambda: [f.path for f in b._app.repo.files_of_source(sid)])
+        assert any(p.endswith("旧报告.pdf") for p in files)                 # 不自动重建：先问用户
+        r = b.set_source_settings(sid, {"ocr": True})
+        assert r["changes"] == "排除规则、打开文字识别" and r["pdfs"] >= 1
+        assert b.library()["sources"][0]["pending"] == "排除规则、打开文字识别"
+        b.update_source(b.library()["sources"][0]["path"])                  # 用户点“现在更新”
         end = time.time() + 10
         while time.time() < end:
             files = b._call(lambda: [f.path for f in b._app.repo.files_of_source(sid)])
@@ -90,8 +97,12 @@ def test_bridge_folder_settings(tmp_path, docs):
                 break
             time.sleep(0.1)
         assert not any(p.endswith("旧报告.pdf") for p in files)
+        end = time.time() + 5
+        while time.time() < end and b.library()["sources"][0]["pending"]:
+            time.sleep(0.1)
         lib = b.library()
         assert lib["sources"][0]["exclude"]["patterns"] == ["归档"] and "ocr_available" in lib
+        assert lib["sources"][0]["pending"] == ""                            # 更新完：提示消失
     finally:
         b._close()
 

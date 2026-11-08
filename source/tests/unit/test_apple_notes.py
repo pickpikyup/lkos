@@ -27,6 +27,7 @@ NOTES = [
     note("x-coredata://3", "银行密码", "", locked=True),
     note("x-coredata://4", "旧笔记", "<div>已经删除的内容</div>", folder=("iCloud", "最近删除")),
     note("x-coredata://5", "二期项目会议", "<div>同名的另一条备忘录：进度汇报</div>"),
+    dict(note("x-coredata://6", "家庭共享清单", "<div>共享内容</div>", folder=("iCloud", "家庭")), shared=True),
 ]
 
 
@@ -40,7 +41,7 @@ def test_html_to_markdown():
 def test_sync_incremental(tmp_path):
     home = tmp_path / "h"
     r = sync(home, lambda: NOTES)
-    assert r == {"written": 3, "removed": 0, "skipped": 2, "total": 3}
+    assert r == {"written": 3, "removed": 0, "skipped": 2, "shared": 1, "total": 3}
     root = apple_notes.export_dir(home)
     files = sorted(str(p.relative_to(root)) for p in root.rglob("*.md"))
     assert files == ["iCloud/工作/二期项目会议 (2).md", "iCloud/工作/二期项目会议.md", "iCloud/生活/购物清单.md"]

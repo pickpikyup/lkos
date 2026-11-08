@@ -552,3 +552,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .sv-st.warn { background: var(--warn-bg, rgba(217, 119, 6, .14)); color: var(--warn-ink); }
 .sv-st.muted { background: var(--line); color: var(--muted); }
 .log-older { text-align: center; font-size: 12px; color: var(--muted); padding: 6px 0 10px; }
+.pending { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; font-size: 13px;
+  background: color-mix(in srgb, var(--warn-dot, #d97706) 10%, transparent); color: var(--ink-2); }
+.pending .t { flex: 1; min-width: 0; }
+.pending.ask { color: var(--ink); }
+.problems .acts { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
