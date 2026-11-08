@@ -21,8 +21,8 @@ def test_parser_for_extension(name, ptype):
 
 
 def test_parser_for_unsupported_or_not_allowed():
-    assert parser_for(Path("a.txt")) is None
-    assert parser_for(Path("a.key")) is None
+    assert parser_for(Path("a.xyz")) is None and parser_for(Path("a.txt")) is not None
+    assert parser_for(Path("a.mobi")) is None and not getattr(parser_for(Path("a.key")), "supported", True)
     assert parser_for(Path("a.pdf"), allowed=[".md"]) is None
 
 

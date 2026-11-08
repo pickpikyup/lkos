@@ -168,6 +168,39 @@ def source_set(number: int = typer.Argument(..., min=1, help="编号（见 lkos 
     console.print(f"  扫描件文字识别：{'开' if s['ocr'] else '关'}")
 
 
+@app.command("survey")
+def survey_cmd(folder: Path = typer.Argument(..., exists=True, file_okay=False, dir_okay=True,
+                                            help="要检查的文件夹（不需要先添加）")):
+    """资料体检：统计文件夹里各种格式的文件，哪些能索引、哪些需要另存为、哪些不支持。"""
+    from lkos.indexing.survey import survey
+
+    try:
+        a = open_app()
+    except LkosError as e:
+        fail(e)
+    cfg = a.cfg.indexing
+    settings = a.repo.source_settings(str(folder.expanduser().resolve())) or {}
+    a.close()
+    r = survey(folder, list(cfg.extensions), cfg.max_file_size_mb, settings.get("exclude"), cfg.skip_hidden)
+    status = {"ok": "能索引", "convert": "需要另存为", "unsupported": "不支持"}
+    table = Table("格式", "文件数", "大小", "状态", "说明")
+    for t in r["types"]:
+        table.add_row("." + t["ext"] if t["ext"] != "(无扩展名)" else t["ext"], str(t["count"]),
+                      f"{t['bytes'] / 1048576:.1f} MB", status[t["status"]] + (f"（{t['label']}）" if t["label"] else ""),
+                      t["hint"])
+    console.print(table)
+    console.print(f"共 {r['files']} 个文件，能索引 {r['indexable']} 个，需要另存为 {r['convert']} 个，不支持 {r['unsupported']} 个。")
+    if r["cloud_only"] or r["cloud_placeholders"]:
+        console.print(f"iCloud 里还没下载到本机的文件：{r['cloud_only'] + r['cloud_placeholders']} 个"
+                      "（在访达里右键 → “立即下载”，或在 iCloud 设置里关掉“优化 Mac 储存空间”）")
+    if r["vaults"]:
+        console.print("发现 Obsidian 仓库：" + "、".join(r["vaults"]))
+    if r["skipped_dirs"]:
+        console.print("跳过的程序包 / 图库文件夹：" + "、".join(r["skipped_dirs"][:10]))
+    if r["truncated"]:
+        console.print("[yellow]文件太多，只检查了一部分[/yellow]")
+
+
 @notes_app.command("add")
 def notes_add():
     """把 Mac 备忘录加入资料库并索引（之后 lkos update 会一起同步）。第一次会请你允许访问“备忘录”。"""

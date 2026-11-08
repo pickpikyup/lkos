@@ -120,6 +120,7 @@
       const lib = await api("library");
       S.lib = lib; S.sources = lib.sources; S.stats = lib.stats; S.index = lib.index; S.paused = lib.paused;
       S.problemsCount = lib.problems.length;
+      if (S.view === "lib" || !S.vaults) S.vaults = (await api("obsidian_vaults")).vaults || [];
     } catch (e) { /* 忽略 */ }
     renderSide(); renderStatus();
     if (S.view === "lib") renderLib();
@@ -596,7 +597,7 @@
     const path = el.dataset.path;
     if (!list) { try { list = await api("file_tags", path); } catch (e) { return; } }
     if (!$("src-tags") || $("src-tags").dataset.path !== path) return;
-    $("src-tags").innerHTML = list.map((t) => `<span class="tag${t.origin === "user" ? " user" : ""}" title="${t.origin === "user" ? "手动添加" : "自动生成"}">${esc(t.tag)}<button type="button" data-tag-remove="${esc(t.tag)}" aria-label="删除标签 ${esc(t.tag)}">×</button></span>`).join("") +
+    $("src-tags").innerHTML = list.map((t) => `<span class="tag${t.origin === "user" ? " user" : ""}" title="${t.origin === "user" ? "手动添加" : t.origin === "file" ? "来自笔记里的标签" : "自动生成"}">${esc(t.tag)}<button type="button" data-tag-remove="${esc(t.tag)}" aria-label="删除标签 ${esc(t.tag)}">×</button></span>`).join("") +
       `<form class="tag-add" data-tag-add="1"><label class="sr-only" for="tag-input">添加标签</label><input id="tag-input" maxlength="16" placeholder="＋ 标签"></form>`;
   }
 
@@ -1296,6 +1297,67 @@
     return s.kind === "apple_notes" ? "Mac 备忘录" : (s.path.split("/").filter(Boolean).pop() || s.path);
   }
 
+  // ---------------- Obsidian 仓库、资料体检 ----------------
+  function vaultPickHTML() {
+    const list = (S.vaults || []).filter((v) => !v.added);
+    if (!list.length) return "";
+    return `<section class="folder vaults" aria-label="Obsidian 仓库"><div class="row"><h2>添加 Obsidian 仓库</h2>
+      <span class="path">从 Obsidian 打开过的仓库里选；双链、标签、属性、白板都会解析，出处可以直接在 Obsidian 中打开</span><span class="grow"></span>
+      <button type="button" class="btn small" data-action="vault-close">收起</button></div>
+      <div class="vault-list">${list.map((v) => `<div class="vault"><span class="name">${esc(v.name)}</span><span class="path">${esc(v.path)}</span>
+        <button type="button" class="btn small primary" data-add-vault="${esc(v.path)}">添加</button></div>`).join("")}</div></section>`;
+  }
+
+  const SURVEY_STATUS = { ok: ["能索引", "ok"], convert: ["需要另存为", "warn"], unsupported: ["不支持", "muted"] };
+  function sizeText(b) {
+    if (b >= 1073741824) return (b / 1073741824).toFixed(1) + " GB";
+    if (b >= 1048576) return (b / 1048576).toFixed(1) + " MB";
+    return Math.max(1, Math.round(b / 1024)) + " KB";
+  }
+
+  function surveyHTML() {
+    const sv = S.survey;
+    if (!sv) return "";
+    let h = `<section class="folder survey" aria-label="资料体检"><div class="row"><h2>资料体检</h2>
+      <span class="path">只看文件名和大小，不读内容；结果只在本机显示</span><span class="grow"></span>
+      <button type="button" class="btn small" data-action="survey-other">检查其他文件夹…</button>
+      <button type="button" class="btn small" data-action="survey-close">收起</button></div>`;
+    if (sv.loading) return h + '<p class="sub">正在扫描…文件很多时要几十秒</p></section>';
+    if (sv.error) return h + `<p class="sub">${esc(sv.error)}</p></section>`;
+    for (const r of sv.reports) {
+      const name = r.folder.split("/").filter(Boolean).pop() || r.folder;
+      if (r.error) { h += `<h3 class="sv-name">${esc(name)}</h3><p class="sub">${esc(r.error)}</p>`; continue; }
+      h += `<h3 class="sv-name">${esc(name)} <span class="sub">${fmt(r.files)} 个文件 · ${sizeText(r.bytes)} · 能索引 ${fmt(r.indexable)}${r.convert ? " · 需要另存为 " + fmt(r.convert) : ""}${r.unsupported ? " · 不支持 " + fmt(r.unsupported) : ""}${r.source ? "" : " · 还没加入资料库"}</span></h3>`;
+      const notes = [];
+      const cloud = r.cloud_only + r.cloud_placeholders;
+      if (cloud) notes.push(`<b>${fmt(cloud)} 个文件只在 iCloud 里</b>，还没下载到这台电脑${r.cloud_placeholders ? "，索引时读不到" : "，索引时会自动下载（可能较慢）"}：在访达里右键文件夹 →“立即下载”，或在 iCloud 设置里关掉“优化 Mac 储存空间”。`);
+      for (const v of r.vaults) {
+        if (v === r.folder) continue;
+        const added = (S.sources || []).some((x) => v === x.path || v.startsWith(x.path + "/"));
+        notes.push(`发现 Obsidian 仓库：${esc(v)}${added ? "（已在资料库里）" : ` <button type="button" class="btn small" data-add-vault="${esc(v)}">单独添加</button>`}`);
+      }
+      if (r.too_large.length) notes.push(`超过大小上限、没有索引：${r.too_large.slice(0, 5).map((x) => esc(x.path.split("/").pop()) + "（" + sizeText(x.bytes) + "）").join("、")}${r.too_large.length > 5 ? " 等" : ""}`);
+      if (r.skipped_dirs.length) notes.push(`跳过的程序包、图库、网页附件文件夹 ${r.skipped_dirs.length} 个：${r.skipped_dirs.slice(0, 4).map(esc).join("、")}${r.skipped_dirs.length > 4 ? " 等" : ""}`);
+      if (r.hidden) notes.push(`隐藏文件 ${fmt(r.hidden)} 个（不索引）`);
+      if (r.source && r.source.failed) notes.push(`上次索引有 ${fmt(r.source.failed)} 个文件读取失败，见下方“需要处理的文件”`);
+      if (r.truncated) notes.push("文件太多，只检查了一部分");
+      if (notes.length) h += `<ul class="sv-notes">${notes.map((x) => `<li>${x}</li>`).join("")}</ul>`;
+      h += `<div class="sv-wrap"><table class="calls sv-table"><thead><tr><th>格式</th><th class="num">文件</th><th class="num">大小</th><th>状态</th><th>说明</th></tr></thead><tbody>${r.types.map((t) => {
+        const st = SURVEY_STATUS[t.status];
+        return `<tr><td>${t.ext === "(无扩展名)" ? "无扩展名" : "." + esc(t.ext)}</td><td class="num">${fmt(t.count)}</td><td class="num">${sizeText(t.bytes)}</td>
+          <td><span class="sv-st ${st[1]}">${st[0]}</span>${t.label ? ` <span class="sub">${esc(t.label)}</span>` : ""}</td><td class="err" style="color:var(--ink-2)">${esc(t.hint || "")}</td></tr>`;
+      }).join("")}</tbody></table></div>`;
+    }
+    return h + "</section>";
+  }
+
+  async function runSurvey(fn) {
+    S.survey = { loading: true }; renderLib();
+    try { S.survey = await fn(); } catch (e) { S.survey = { error: String(e.message || e) }; }
+    if (S.survey && S.survey.cancelled) S.survey = S.surveyPrev || null;
+    renderLib();
+  }
+
   async function addNotes() {
     toast("正在读取备忘录…第一次会请你允许 LKOS 访问“备忘录”");
     const r = await api("add_notes");
@@ -1312,10 +1374,14 @@
     let h = `<div class="lib-head"><h1>资料库</h1><span class="sub">${lib.sources.length} 个文件夹 · ${fmt(total)} 个文件 · ${fmt(lib.stats.chunks)} 个文本块</span>
       <span class="grow"></span>
       ${lib.sources.length ? '<button type="button" class="btn" data-action="update-all">全部立即更新</button>' : ""}
+      ${lib.sources.length ? '<button type="button" class="btn" data-action="survey">资料体检</button>' : ""}
       ${lib.notes_available && !lib.sources.some((s) => s.kind === "apple_notes") ? '<button type="button" class="btn" data-action="add-notes">添加 Mac 备忘录</button>' : ""}
+      ${(S.vaults || []).some((v) => !v.added) && !S.vaultOpen ? '<button type="button" class="btn" data-action="vault-open">添加 Obsidian 仓库</button>' : ""}
       <button type="button" class="btn primary" data-action="add">添加文件夹</button></div>
       <div class="drop" id="drop">把文件夹拖到这里添加 · 支持 <span id="drop-formats">${esc(FORMATS || "PDF、Word、PowerPoint、Markdown")}</span></div>`;
-    if (!lib.sources.length) h += '<p class="sub">还没有添加文件夹。</p>';
+    if (S.vaultOpen) h += vaultPickHTML();
+    h += surveyHTML();
+    if (!lib.sources.length) h += '<p class="sub">还没有添加文件夹。添加之前也可以先 <button type="button" class="btn small" data-action="survey-other">做个资料体检</button>，看看文件夹里都是什么格式。</p>';
     for (const s of lib.sources) {
       const name = sourceName(s);
       const active = i.folder === s.path && (i.state === "running" || i.state === "paused");
@@ -1324,7 +1390,7 @@
       if (active) state = `<span class="state" style="color:var(--run-ink)">${i.kind === "tags" ? "生成标签中" : s.last_indexed ? "更新中" : "首次索引中"}</span>`;
       else if (!s.last_indexed) state = `<span class="state" style="color:var(--warn-ink)"><span class="dot" style="background:var(--warn-dot)"></span>还没索引完</span>`;
       else state = `<span class="state" style="color:var(--ok-ink)"><span class="dot" style="background:var(--ok-dot)"></span>已是最新</span>`;
-      h += `<section class="folder" aria-label="${esc(name)}"><div class="row"><h2>${esc(name)}</h2><span class="path">${s.kind === "apple_notes" ? "每次更新时从“备忘录”应用同步（只读正文，不含附件和加锁的备忘录）" : esc(s.path)}</span><span class="grow"></span>${state}</div>`;
+      h += `<section class="folder" aria-label="${esc(name)}"><div class="row"><h2>${esc(name)}</h2><span class="path">${s.kind === "apple_notes" ? "每次更新时从“备忘录”应用同步（只读正文，不含附件和加锁的备忘录）" : (s.kind === "obsidian" ? "Obsidian 仓库 · " : "") + esc(s.path)}</span><span class="grow"></span>${state}</div>`;
       if (active) {
         const pct = i.total ? Math.floor((i.done / i.total) * 100) : 0;
         h += `<div class="bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="索引进度"><div style="width:${pct}%"></div></div>
@@ -1518,6 +1584,13 @@
     if (d.scopeClearFile) { S.scope.path = null; return renderScope(); }
     if (d.copySrc) { const s = currentSources().find((x) => x.n === Number(d.copySrc)); if (s) copy(s.text); return; }
     if (d.update) { await api("update_source", d.update); toast("已加入更新队列"); return; }
+    if (d.addVault) {
+      const r = await api("add_folder", d.addVault);
+      if (r.error) { toast(r.error); return; }
+      toast(`已添加 Obsidian 仓库，开始索引 ${fmt(r.files)} 个文件`);
+      if (!(S.vaults || []).some((v) => !v.added && v.path !== d.addVault)) S.vaultOpen = false;
+      return refreshLibrary();
+    }
     if (d.remove) { S.confirmRemove = Number(d.remove); return renderLib(); }
     if (d.folderSettings) { S.libEdit = S.libEdit === Number(d.folderSettings) ? null : Number(d.folderSettings); return renderLib(); }
     if (d.removeYes) {
@@ -1529,6 +1602,11 @@
     switch (d.action) {
       case "add": return addFolder();
       case "add-notes": return addNotes();
+      case "vault-open": S.vaultOpen = true; return renderLib();
+      case "vault-close": S.vaultOpen = false; return renderLib();
+      case "survey": S.surveyPrev = null; return runSurvey(() => api("survey"));
+      case "survey-other": S.surveyPrev = S.survey && !S.survey.loading ? S.survey : null; return runSurvey(() => api("choose_survey_folder"));
+      case "survey-close": S.survey = null; return renderLib();
       case "lib": return showView("lib");
       case "new": return newQuestion();
       case "update-all": { const r = await api("update_all"); toast(r.queued ? `${r.queued} 个文件夹已加入更新队列` : "已经在更新了"); return; }

@@ -27,7 +27,7 @@ from lkos.app import App
 from lkos.errors import Cancelled, LkosError
 from lkos.evaluation.evaluate import is_not_found
 from lkos.parsers.base import file_type_groups
-from lkos.sources import apple_notes
+from lkos.sources import apple_notes, obsidian
 from lkos.models_config import load_models, model_choices
 from lkos.ui.chat_api import ChatMixin
 from lkos.ui.models_api import ModelsMixin
@@ -660,16 +660,75 @@ class Bridge(ChatMixin, ModelsMixin):
         folder = folder.resolve()
         n = self._call(lambda: sum(1 for _ in self._app.indexer.walk(folder)))
         if n == 0:
-            return {"error": "这个文件夹里没有可以索引的文件（PDF、Word、PowerPoint .pptx、Markdown）"}
+            return {"error": "这个文件夹里没有可以索引的文件。可以点“资料体检”看看里面都是什么格式"}
         self._call(lambda: self._app.repo.upsert_source(str(folder)))
         self._indexer.enqueue(str(folder))
         self._emit({"type": "library_changed"})
         return {"ok": True, "folder": str(folder), "files": n}
 
     def _sources(self) -> list[dict]:
-        """资料库里的来源；Mac 备忘录的导出文件夹标为 kind=apple_notes（界面上显示为“Mac 备忘录”）。"""
+        """资料库里的来源；Mac 备忘录的导出文件夹标为 kind=apple_notes（界面上显示为“Mac 备忘录”），
+        Obsidian 仓库标为 kind=obsidian。"""
         notes_dir = str(apple_notes.export_dir(self._app.home).resolve())
-        return [{**x, "kind": "apple_notes" if x["path"] == notes_dir else "folder"} for x in self._app.repo.list_sources()]
+
+        def kind(path: str) -> str:
+            if path == notes_dir:
+                return "apple_notes"
+            return "obsidian" if obsidian.is_vault(path) else "folder"
+        return [{**x, "kind": kind(x["path"])} for x in self._app.repo.list_sources()]
+
+    def obsidian_vaults(self) -> dict:
+        """Obsidian 打开过的仓库（读 Obsidian 自己的 obsidian.json），标出哪些已经在资料库里。"""
+        paths = [s["path"] for s in self._call(self._app.repo.list_sources)]
+
+        def added(p: str) -> bool:
+            try:
+                rp = str(Path(p).resolve())
+            except OSError:
+                return False
+            return any(rp == x or rp.startswith(x.rstrip(os.sep) + os.sep) for x in paths)
+        vaults = [{**v, "added": added(v["path"])} for v in obsidian.discover() if v["exists"]]
+        return {"vaults": vaults, "installed": obsidian.installed()}
+
+    def survey(self, path: str | None = None) -> dict:
+        """资料体检：path 为空时检查资料库里的所有文件夹，否则检查这个文件夹（不需要先添加）。"""
+        from lkos.indexing.survey import survey
+
+        cfg = self._app.cfg.indexing
+        if path:
+            folder = Path(str(path)).expanduser()
+            if not folder.is_dir():
+                return {"error": f"找不到这个文件夹：{folder}"}
+            targets = [(str(folder.resolve()), None)]
+        else:
+            targets = [(s["path"], s) for s in self._call(self._sources) if s["kind"] != "apple_notes"]
+            if not targets:
+                return {"error": "资料库里还没有文件夹"}
+        reports = []
+        for folder, src in targets:
+            if not Path(folder).is_dir():
+                reports.append({"folder": folder, "error": "文件夹不存在（可能移动了或在外接硬盘上）"})
+                continue
+            settings = self._call(lambda: self._app.repo.source_settings(folder)) or {}
+            r = survey(folder, list(cfg.extensions), cfg.max_file_size_mb, settings.get("exclude"), cfg.skip_hidden)
+            if src is not None:
+                r["source"] = {"id": src["id"], "files": src["files"], "failed": src["failed"], "kind": src["kind"]}
+            reports.append(r)
+        log.info("资料体检：%d 个文件夹，共 %d 个文件", len(reports), sum(r.get("files", 0) for r in reports))
+        return {"reports": reports}
+
+    def choose_survey_folder(self) -> dict:
+        if self._window is None:
+            return {"error": "窗口还没准备好"}
+        try:
+            import webview
+            kind = webview.FileDialog.FOLDER if hasattr(webview, "FileDialog") else webview.FOLDER_DIALOG
+        except ImportError:
+            kind = "folder"
+        picked = self._window.create_file_dialog(kind)
+        if not picked:
+            return {"cancelled": True}
+        return self.survey(picked[0] if isinstance(picked, (list, tuple)) else picked)
 
     def add_notes(self) -> dict:
         """添加 Mac 备忘录：导出到数据目录下的 apple-notes 文件夹，按普通文件夹索引（之后按周期自动同步）。"""
@@ -853,6 +912,10 @@ class Bridge(ChatMixin, ModelsMixin):
         if nid:                                   # 备忘录：在备忘录应用里显示这一条
             problem = apple_notes.show_note(nid)
             return {"error": problem} if problem else {"ok": True}
+        if obsidian.installed() and obsidian.vault_of(str(path)) and Path(str(path)).suffix.lower() in (".md", ".canvas"):
+            problem = obsidian.open_in_obsidian(str(path))      # Obsidian 仓库里的笔记：在 Obsidian 中打开
+            if not problem:
+                return {"ok": True}
         problem = self._opener(str(path))
         return {"error": problem} if problem else {"ok": True}
 

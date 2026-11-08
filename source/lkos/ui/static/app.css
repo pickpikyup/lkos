@@ -536,3 +536,18 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .meta .btn.small:hover { background: var(--soft); color: var(--ink); }
 .turn .meta .btn.small { opacity: .75; }
 .turn:hover .meta .btn.small, .turn.sel .meta .btn.small { opacity: 1; }
+
+/* ---------- Obsidian 仓库、资料体检 ---------- */
+.vault-list { display: flex; flex-direction: column; gap: 8px; }
+.vault { display: flex; align-items: center; gap: 12px; font-size: 13px; min-width: 0; }
+.vault .name { font-weight: 600; white-space: nowrap; }
+.vault .path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.survey .sv-name { margin: 4px 0 0; font-size: 14px; font-weight: 600; }
+.survey .sv-name .sub { font-weight: 400; font-size: 12px; margin-left: 6px; }
+.sv-notes { margin: 0; padding-left: 18px; font-size: 13px; color: var(--ink-2); display: flex; flex-direction: column; gap: 4px; }
+.sv-wrap { overflow: auto; max-height: 420px; border-radius: 8px; }
+.sv-table td.err { white-space: normal; min-width: 220px; }
+.sv-st { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
+.sv-st.ok { background: var(--ok-bg, rgba(22, 163, 74, .12)); color: var(--ok-ink); }
+.sv-st.warn { background: var(--warn-bg, rgba(217, 119, 6, .14)); color: var(--warn-ink); }
+.sv-st.muted { background: var(--line); color: var(--muted); }

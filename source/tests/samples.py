@@ -123,7 +123,7 @@ def build_corpus(root: Path) -> Path:
     # 应被忽略的文件
     (root / ".hidden.md").write_text("# hidden\n\nshould be ignored", encoding="utf-8")
     (root / "~$项目计划书.docx").write_bytes(b"lock file")
-    (root / "notes.txt").write_text("unsupported extension", encoding="utf-8")
+    (root / "notes.xyz").write_text("unsupported extension", encoding="utf-8")
     return root
 
 

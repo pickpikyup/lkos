@@ -49,3 +49,39 @@ class PptParser:
     def parse(self, path: Path) -> Iterator[Block]:
         raise UnsupportedFileError("旧版 .ppt：请用 WPS 或 Keynote 另存为 .pptx，下次更新时会自动索引")
         yield  # pragma: no cover - 让它成为生成器
+
+
+class XlsParser:
+    extensions = (".xls",)
+    file_type = "xls"
+    label = "表格"
+    supported = False
+
+    def parse(self, path: Path) -> Iterator[Block]:
+        raise UnsupportedFileError("旧版 .xls：请用 Excel / WPS / Numbers 另存为 .xlsx，下次更新时会自动索引")
+        yield  # pragma: no cover
+
+
+class WpsParser:
+    extensions = (".wps", ".et", ".dps")
+    file_type = "wps"
+    label = "WPS"
+    supported = False
+
+    def parse(self, path: Path) -> Iterator[Block]:
+        target = {".wps": ".docx", ".et": ".xlsx", ".dps": ".pptx"}.get(Path(path).suffix.lower(), ".docx")
+        raise UnsupportedFileError(f"WPS 专用格式：请用 WPS 另存为 {target}，下次更新时会自动索引")
+        yield  # pragma: no cover
+
+
+class IWorkParser:
+    extensions = (".pages", ".key", ".numbers")
+    file_type = "iwork"
+    label = "Pages / Keynote / Numbers"
+    supported = False
+
+    def parse(self, path: Path) -> Iterator[Block]:
+        app, target = {".pages": ("Pages", "Word（.docx）或 PDF"), ".key": ("Keynote", "PowerPoint（.pptx）或 PDF"),
+                       ".numbers": ("Numbers", "Excel（.xlsx）")}.get(Path(path).suffix.lower(), ("Pages", "PDF"))
+        raise UnsupportedFileError(f"{app} 文件：请在 {app} 里“文件 → 导出为”{target}，下次更新时会自动索引")
+        yield  # pragma: no cover

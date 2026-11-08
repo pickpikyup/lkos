@@ -33,7 +33,8 @@ tasks:
     max_tokens: 512                # 实测回答多在 50 tokens 以内；留足 4K 上下文给 4 个片段
 
 indexing:
-  extensions: [.pdf, .docx, .doc, .pptx, .ppt, .md]   # .doc 在 macOS 上自动转换；.ppt 只提示另存为 .pptx
+  extensions: all     # 所有能识别的格式；也可以列出要的扩展名，如 [.pdf, .docx, .md]
+                      # .doc / .rtf 在 macOS 上用自带的 textutil 转换；.ppt / .xls / WPS / iWork 只提示另存为
   max_file_size_mb: 100
   # 按语言切块：中文约 500 字、英文 / 法文约 1,200 字符，重叠 15%（两种语言的片段 token 数接近）
   # 修改后各来源会自动重新切块（向量按文本缓存，未改动的文本不重算）

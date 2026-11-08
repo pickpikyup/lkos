@@ -31,14 +31,38 @@ def clean_text(text: str) -> str:
     return re.sub(r"[ \t]+", " ", text).strip()
 
 
+def decode_text(raw: bytes) -> str:
+    """文本文件解码：BOM → UTF-8 → GB18030（中文 Windows 常见）→ cp1252（法文、英文旧文件）。"""
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw[3:].decode("utf-8", errors="replace")
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", errors="replace")
+    for enc in ("utf-8", "gb18030"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("cp1252", errors="replace")
+
+
 def _registry() -> list[Parser]:
+    from lkos.parsers.canvas import CanvasParser
     from lkos.parsers.docx import DocxParser
-    from lkos.parsers.legacy import DocParser, PptParser
+    from lkos.parsers.ebook import EpubParser
+    from lkos.parsers.html import HtmlParser
+    from lkos.parsers.legacy import DocParser, IWorkParser, PptParser, WpsParser, XlsParser
     from lkos.parsers.markdown import MarkdownParser
+    from lkos.parsers.odf import OdpParser, OdsParser, OdtParser
     from lkos.parsers.pdf import PdfParser
     from lkos.parsers.pptx import PptxParser
+    from lkos.parsers.rtf import RtfParser
+    from lkos.parsers.table import CsvParser, XlsxParser
+    from lkos.parsers.text import TextParser
 
-    return [PdfParser(), DocxParser(), PptxParser(), MarkdownParser(), DocParser(), PptParser()]
+    # 顺序就是界面上类型的顺序；label 相同的合成一组（如 Word = .docx + .doc + .odt）
+    return [PdfParser(), DocxParser(), PptxParser(), XlsxParser(), MarkdownParser(), CanvasParser(), TextParser(),
+            CsvParser(), HtmlParser(), RtfParser(), EpubParser(), DocParser(), OdtParser(), PptParser(), OdpParser(),
+            OdsParser(), XlsParser(), WpsParser(), IWorkParser()]
 
 
 def file_type_groups(allowed: list[str] | None = None) -> list[dict]:

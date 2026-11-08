@@ -69,8 +69,17 @@ class TaskConfig:
 
 
 STRATEGIES = ("doc_first", "flat")
-# .ppt 也在列表里：不能解析，但会出现在资料库的“需要处理的文件”里，提示另存为 .pptx
-DEFAULT_EXTENSIONS = (".pdf", ".docx", ".doc", ".pptx", ".ppt", ".md")
+# 默认（配置里写 all）= 所有解析器认识的扩展名。.ppt、.xls、WPS、iWork 也在列表里：不能解析，
+# 但会出现在资料库的“需要处理的文件”里，提示怎样另存为能解析的格式
+DEFAULT_EXTENSIONS = (".pdf", ".docx", ".doc", ".odt", ".pptx", ".ppt", ".odp", ".xlsx", ".xlsm", ".ods", ".csv", ".tsv",
+                      ".md", ".markdown", ".canvas", ".txt", ".text", ".html", ".htm", ".xhtml", ".webarchive", ".rtf",
+                      ".epub", ".xls", ".wps", ".et", ".dps", ".pages", ".key", ".numbers")
+
+
+def _extensions(value) -> list[str]:
+    if value in (None, "all", ["all"]):
+        return list(DEFAULT_EXTENSIONS)
+    return [e.lower() if e.startswith(".") else "." + e.lower() for e in value]
 
 
 @dataclass
@@ -202,7 +211,7 @@ def parse_config(raw: dict) -> Config:
 
         idx = raw.get("indexing") or {}
         indexing = IndexingConfig(
-            extensions=[e.lower() if e.startswith(".") else "." + e.lower() for e in idx.get("extensions", DEFAULT_EXTENSIONS)],
+            extensions=_extensions(idx.get("extensions", "all")),
             max_file_size_mb=float(idx.get("max_file_size_mb", 100)),
             chunk_chars_zh=int(idx.get("chunk_chars_zh", 500)),
             chunk_chars_other=int(idx.get("chunk_chars_other", 1200)),

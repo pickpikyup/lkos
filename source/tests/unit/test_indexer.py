@@ -34,7 +34,7 @@ def test_initial_index_covers_all_formats_and_ignores_others(app, corpus):
     assert stats["files_by_type"] == {"docx": 1, "pdf": 1, "md": 2}
     assert set(stats["chunks_by_lang"]) == {"zh", "en", "fr"}
     paths = [r["path"] for r in app.repo.conn.execute("SELECT path FROM files")]
-    assert not any(".hidden" in p or "~$" in p or p.endswith(".txt") for p in paths)
+    assert not any(".hidden" in p or "~$" in p or p.endswith(".xyz") for p in paths)
 
 
 def test_second_run_skips_unchanged_without_embedding(app, corpus, fake):

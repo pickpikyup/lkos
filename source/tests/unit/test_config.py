@@ -1,6 +1,6 @@
 import pytest
 
-from lkos.config import load_config, split_model_ref
+from lkos.config import DEFAULT_EXTENSIONS, load_config, split_model_ref
 from lkos.errors import ConfigError
 from tests.conftest import fake_overrides
 
@@ -18,7 +18,7 @@ def test_defaults_match_design():
     assert cfg.privacy.offline_mode is True
     assert cfg.providers["hermes"].is_remote is True
     assert cfg.providers["local"].is_remote is False
-    assert cfg.indexing.extensions == [".pdf", ".docx", ".doc", ".pptx", ".ppt", ".md"]
+    assert cfg.indexing.extensions == list(DEFAULT_EXTENSIONS) and ".xlsx" in cfg.indexing.extensions
 
 
 def test_user_file_deep_merges_over_defaults(tmp_path):

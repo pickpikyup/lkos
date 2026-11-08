@@ -568,6 +568,16 @@ class Repository:
                 self.add_tag(file_id, t, "model")
             self.conn.execute("UPDATE files SET tagged_at = ? WHERE id = ?", (now_iso(), int(file_id)))
 
+    def set_file_tags(self, path: str, tags: Sequence[str]) -> None:
+        """文件自带的标签（如 Obsidian 笔记的 tags 属性、正文 #标签）：每次重新索引时替换；手动加的不动。"""
+        row = self.conn.execute("SELECT id FROM files WHERE path = ?", (path,)).fetchone()
+        if row is None:
+            return
+        with self.transaction():
+            self.conn.execute("DELETE FROM file_tags WHERE file_id = ? AND origin = 'file'", (row["id"],))
+            for t in tags:
+                self.add_tag(row["id"], t, "file")
+
     def files_to_tag(self, source_id: int | None = None, limit: int | None = None) -> list[FileRecord]:
         """已索引、还没自动生成标签（或内容变化后需要重新生成）的文件，最近修改的在前。"""
         sql = "SELECT * FROM files WHERE status = 'indexed' AND tagged_at IS NULL"

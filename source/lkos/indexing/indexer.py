@@ -57,6 +57,25 @@ def sha256_of(path: Path, bufsize: int = 1 << 20) -> str:
     return h.hexdigest()
 
 
+# 不进入的文件夹：程序包、照片 / 音乐图库、开发依赖、保存网页时附带的资源文件夹（里面的 .html/.js 不是正文）
+SKIP_DIR_NAMES = {"node_modules", "__pycache__", "site-packages", "bower_components", "$RECYCLE.BIN",
+                  "System Volume Information"}
+SKIP_DIR_SUFFIXES = (".app", ".framework", ".bundle", ".plugin", ".kext", ".photoslibrary", ".photolibrary",
+                     ".musiclibrary", ".tvlibrary", ".imovielibrary", ".fcpbundle", ".lrdata", ".aplibrary",
+                     ".xcodeproj", ".xcworkspace", ".xcassets", ".playground", ".dSYM", ".pkg", ".mpkg")
+
+
+def skip_dir(name: str, sibling_files: list[str] | None = None) -> bool:
+    if name in SKIP_DIR_NAMES or name.lower().endswith(tuple(x.lower() for x in SKIP_DIR_SUFFIXES)):
+        return True
+    for tail in ("_files", "_archivos", "_fichiers", ".files"):    # “网页，全部”保存时生成的资源文件夹
+        if name.endswith(tail) and sibling_files is not None:
+            stem = name[: -len(tail)]
+            if any(f in sibling_files for f in (stem + ".html", stem + ".htm")):
+                return True
+    return False
+
+
 def norm_path(path: Path) -> str:
     """统一为 NFC：macOS 文件名可能是 NFD，避免同一中文文件名出现两条记录。"""
     return unicodedata.normalize("NFC", str(path))
@@ -125,6 +144,7 @@ class Indexer:
         for dirpath, dirnames, filenames in os.walk(folder, followlinks=False):
             if self.cfg.indexing.skip_hidden:
                 dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+            dirnames[:] = [d for d in dirnames if not skip_dir(d, filenames)]
             rel_dir = Path(dirpath).relative_to(folder)
             if patterns:
                 dirnames[:] = [d for d in dirnames if not is_excluded(rel_dir / d, patterns)]
@@ -314,6 +334,9 @@ class Indexer:
             vectors.append(new_vecs.pop(h, None))  # 同一文件内重复的文本只写入一次向量
         tokens = [to_fts_tokens(c.text, c.lang) for c in chunks]
         self.repo.replace_file_chunks(source_id, info, chunks, vectors, tokens)
+        file_tags = getattr(parser, "tags", None)
+        if file_tags is not None:
+            self.repo.set_file_tags(path, file_tags)
         run.files_indexed += 1
         run.chunks_added += len(chunks)
         run.chunks_reused += len(chunks) - len(todo)
