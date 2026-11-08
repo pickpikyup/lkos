@@ -212,10 +212,16 @@ class IndexWorker:
                         continue  # 已被移除
                     self._queued.remove(key)
                     self.state["queued"] = sum(1 for k in self._queued if not k.startswith("tags:"))
-                if kind == "tags":
-                    self._tags(app, folder, background)
-                else:
-                    self._index(app, folder, background)
+                try:
+                    if kind == "tags":
+                        self._tags(app, folder, background)
+                    else:
+                        self._index(app, folder, background)
+                except Exception as e:  # noqa: BLE001 - 一个任务出意外不能让后台索引线程停掉
+                    ilog.exception("后台任务出错（%s %s）", kind, folder)
+                    self._set(state="idle", reason=None, folder=None, done=0, total=0, file=None, kind=None,
+                              last={"folder": folder, "error": f"出错了：{e}"})
+                    self._emit({"type": "library_changed"})
         finally:
             app.close()
 

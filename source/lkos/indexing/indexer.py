@@ -197,10 +197,15 @@ class Indexer:
                     break
                 run.files_seen += 1
                 path = norm_path(p)
-                seen.add(path)
                 if gate is not None:
                     gate.wait()
-                action, detail = self._index_one(p, path, source_id, run, gate, rechunk_since, ocr, ocr_since)
+                try:
+                    action, detail = self._index_one(p, path, source_id, run, gate, rechunk_since, ocr, ocr_since)
+                except FileNotFoundError:
+                    # 扫描之后、处理之前文件被移走或删除了（例如正在整理文件夹）：当作已删除，旧索引稍后清理
+                    log.info("文件已不存在，跳过：%s", path)
+                    continue
+                seen.add(path)
                 if action == "failed":
                     failures.append((path, detail or ""))
                 emit(path, action, detail)

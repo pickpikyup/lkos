@@ -117,3 +117,48 @@ def test_file_type_groups_follow_parsers(tmp_path):
         assert b.boot()["file_types"] == groups
     finally:
         b._close()
+
+
+def test_file_vanishes_during_indexing(tmp_path, docs):
+    """扫描后、处理前文件被移走：跳过，不中断整个文件夹（实际遇到过：一边整理文件夹一边索引）。"""
+    a = App.open(home=tmp_path / "h", overrides=fake_overrides(), providers={"test": FakeProvider("test", dim=TEST_DIM)})
+    try:
+        real = list(a.indexer.walk(docs))
+        a.indexer.walk = lambda folder: iter([docs / "已经移走.pdf", *real])
+        rep = a.indexer.index_folder(docs)
+        assert rep.files_indexed == len(real) and rep.files_failed == 0
+    finally:
+        a.close()
+
+
+def test_index_worker_survives_unexpected_error(tmp_path, docs):
+    b = Bridge(home=tmp_path / "h", overrides=fake_overrides(), providers={"test": FakeProvider("test", dim=TEST_DIM)},
+               auto_refresh=False)
+    try:
+        calls = []
+        import lkos.ui.bridge as br
+
+        real_index = br.IndexWorker._index
+
+        def boom(self, app, folder, background):
+            calls.append(folder)
+            if len(calls) == 1:
+                raise RuntimeError("意外错误")
+            return real_index(self, app, folder, background)
+
+        br.IndexWorker._index = boom
+        try:
+            b.add_folder(str(docs))
+            end = time.time() + 5
+            while time.time() < end and not (b._indexer.state.get("last") or {}).get("error"):
+                time.sleep(0.05)
+            assert "意外错误" in b._indexer.state["last"]["error"]
+            b.update_source(str(docs))                       # 线程还活着：第二次正常完成
+            end = time.time() + 10
+            while time.time() < end and "indexed" not in (b._indexer.state.get("last") or {}):
+                time.sleep(0.05)
+            assert b._indexer.state["last"]["indexed"] == 4 and b._indexer._thread.is_alive()
+        finally:
+            br.IndexWorker._index = real_index
+    finally:
+        b._close()
