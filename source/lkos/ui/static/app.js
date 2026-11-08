@@ -1430,11 +1430,15 @@
   }
 
   async function addNotes() {
-    toast("正在读取备忘录…第一次会请你允许 LKOS 访问“备忘录”");
-    const r = await api("add_notes");
-    if (r.error) { toast(r.error); return; }
-    toast(`已添加 Mac 备忘录：${fmt(r.total)} 条，开始索引`);
-    refreshLibrary();
+    if (S.notesBusy) { toast("正在读取备忘录，请稍候"); return; }
+    S.notesBusy = true; renderLib();
+    toast("正在读取备忘录…第一次会弹窗请你允许 LKOS 访问“备忘录”；备忘录多时要一两分钟，期间可以照常使用");
+    try {
+      const r = await api("add_notes");
+      if (r.busy) { toast("正在读取备忘录，请稍候"); return; }
+      if (r.error) { toast(r.error); return; }
+      toast(`已添加 Mac 备忘录：${fmt(r.total)} 条，开始索引`);
+    } finally { S.notesBusy = false; refreshLibrary(); }
   }
 
   function renderLib() {
@@ -1446,7 +1450,7 @@
       <span class="grow"></span>
       ${lib.sources.length ? '<button type="button" class="btn" data-action="update-all">全部立即更新</button>' : ""}
       ${lib.sources.length ? '<button type="button" class="btn" data-action="survey">资料体检</button>' : ""}
-      ${lib.notes_available && !lib.sources.some((s) => s.kind === "apple_notes") ? '<button type="button" class="btn" data-action="add-notes">添加 Mac 备忘录</button>' : ""}
+      ${lib.notes_available && !lib.sources.some((s) => s.kind === "apple_notes") ? (S.notesBusy ? '<button type="button" class="btn" disabled>正在读取备忘录…</button>' : '<button type="button" class="btn" data-action="add-notes">添加 Mac 备忘录</button>') : ""}
       ${(S.vaults || []).some((v) => !v.added) && !S.vaultOpen ? '<button type="button" class="btn" data-action="vault-open">添加 Obsidian 仓库</button>' : ""}
       <button type="button" class="btn primary" data-action="add">添加文件夹</button></div>
       <div class="drop" id="drop">把文件夹拖到这里添加 · 支持 <span id="drop-formats">${esc(FORMATS || "PDF、Word、PowerPoint、Markdown")}</span></div>`;

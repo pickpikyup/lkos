@@ -343,6 +343,7 @@ class Bridge(ChatMixin, ModelsMixin):
         self._window = None
         self._opener = opener
         self._qa = ThreadPoolExecutor(max_workers=1, thread_name_prefix="lkos-qa")
+        self._notes_lock = threading.Lock()
         self._app: App = self._qa.submit(lambda: _open(**kw)).result()
         self._ring = setup_logging(self._app.home)
         self._settings = self._load_settings()
@@ -391,6 +392,7 @@ class Bridge(ChatMixin, ModelsMixin):
                                     home=self._app.home, auto_tags=lambda: bool(self._settings.get("auto_tags")))
 
     def _close(self) -> None:
+        log.info("应用退出")
         self._applock.release()
         self._indexer.shutdown()
         self._cancel.set()
@@ -810,11 +812,20 @@ class Bridge(ChatMixin, ModelsMixin):
         """添加 Mac 备忘录：导出到数据目录下的 apple-notes 文件夹，按普通文件夹索引（之后按周期自动同步）。"""
         if not apple_notes.available():
             return {"error": "只有 macOS 上才能读取备忘录"}
+        # 读取备忘录可能要一两分钟（第一次还要等你在系统弹窗里点“允许”）：不占用问答线程，界面照常可用；
+        # 同一时间只读一次，重复点击直接返回“正在读取”
+        if not self._notes_lock.acquire(blocking=False):
+            return {"busy": True}
         try:
-            stats = self._call(lambda: apple_notes.sync(self._app.home, self._app.indexer.notes_fetch))
+            log.info("开始读取 Mac 备忘录")
+            t0 = time.monotonic()
+            stats = apple_notes.sync(self._app.home, self._app.indexer.notes_fetch)
+            log.info("读取备忘录用时 %.1f 秒", time.monotonic() - t0)
         except LkosError as e:
             log.warning("添加 Mac 备忘录失败：%s", e)
             return {"error": str(e)}
+        finally:
+            self._notes_lock.release()
         folder = str(apple_notes.export_dir(self._app.home).resolve())
         def add():
             sid = self._app.repo.upsert_source(folder)

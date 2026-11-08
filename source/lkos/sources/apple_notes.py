@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
@@ -242,8 +243,25 @@ def note_id_for(home: Path, path: str) -> str | None:
     return None
 
 
+_sync_lock = threading.Lock()
+
+
+def synced_recently(home: Path, seconds: float = 600) -> bool:
+    """最近 seconds 秒内同步过（如刚点了“添加 Mac 备忘录”）：索引时不用马上再读一遍。"""
+    at = load_manifest(home).get("synced_at")
+    try:
+        return at is not None and (datetime.now() - datetime.fromisoformat(at)).total_seconds() < seconds
+    except ValueError:
+        return False
+
+
 def sync(home: Path, fetch: Callable[[], list[dict]] | None = None) -> dict:
-    """把备忘录导出到 <数据目录>/apple-notes。返回 {written, removed, skipped, total}。"""
+    """把备忘录导出到 <数据目录>/apple-notes。返回 {written, removed, skipped, total}。同一时间只做一次。"""
+    with _sync_lock:
+        return _sync(home, fetch)
+
+
+def _sync(home: Path, fetch: Callable[[], list[dict]] | None = None) -> dict:
     notes = (fetch or fetch_notes)()
     root = export_dir(home)
     root.mkdir(parents=True, exist_ok=True)

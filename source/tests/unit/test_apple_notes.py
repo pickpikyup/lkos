@@ -140,3 +140,40 @@ def test_fetch_reads_utf8_file_and_tolerates_bad_output(monkeypatch):
     assert apple_notes.parse_output("﻿[]") == [] and apple_notes.parse_output("ok:0") == []
     with pytest.raises(apple_notes.LkosError, match="无法解析"):
         apple_notes.parse_output('[{"id": "x", "name": 未加引号}]')
+
+
+def test_add_notes_does_not_block_and_ignores_repeat_clicks(tmp_path, monkeypatch):
+    """读取备忘录很慢时：界面其他操作照常（不占问答线程），重复点击直接返回“正在读取”，索引时不再马上重读。"""
+    import threading
+
+    from lkos.ui.bridge import Bridge
+
+    started, release, calls = threading.Event(), threading.Event(), []
+
+    def slow():
+        calls.append(1)
+        started.set()
+        release.wait(10)
+        return NOTES
+
+    monkeypatch.setattr(apple_notes, "fetch_notes", slow)
+    monkeypatch.setattr(apple_notes, "available", lambda: True)
+    b = Bridge(home=tmp_path / "h", overrides=fake_overrides(), providers={"test": FakeProvider("test", dim=TEST_DIM)},
+               auto_refresh=False)
+    try:
+        out = {}
+        t = threading.Thread(target=lambda: out.update(b.add_notes()))
+        t.start()
+        assert started.wait(5)
+        t0 = time.time()
+        assert "sources" in b.library() and time.time() - t0 < 2          # 读取期间资料库照常打开
+        assert b.add_notes() == {"busy": True}
+        release.set()
+        t.join(10)
+        assert out["ok"] and out["total"] == 3
+        end = time.time() + 10
+        while time.time() < end and not (b._indexer.state["state"] == "idle" and b._indexer.state.get("last")):
+            time.sleep(0.05)
+        assert b._indexer.state["last"]["indexed"] == 3 and calls == [1]    # 刚读过：索引时没有再读一遍
+    finally:
+        b._close()

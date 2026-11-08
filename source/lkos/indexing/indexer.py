@@ -176,8 +176,11 @@ class Indexer:
         if self.home is not None and apple_notes.is_notes_dir(folder, self.home):
             # Mac 备忘录：先把备忘录导出成 Markdown（只重写有变化的），再按普通文件夹索引
             try:
-                stats = apple_notes.sync(self.home, self.notes_fetch)
-                log.info("备忘录已同步：%d 条，更新 %d、删除 %d", stats["total"], stats["written"], stats["removed"])
+                if apple_notes.synced_recently(self.home):
+                    log.info("备忘录刚同步过，直接索引")
+                else:
+                    stats = apple_notes.sync(self.home, self.notes_fetch)
+                    log.info("备忘录已同步：%d 条，更新 %d、删除 %d", stats["total"], stats["written"], stats["removed"])
             except LkosError as e:            # 读不到备忘录（没授权、不在 macOS）：照旧索引上次导出的内容
                 log.warning("同步备忘录失败，使用上次导出的内容：%s", e)
         if not folder.is_dir():
