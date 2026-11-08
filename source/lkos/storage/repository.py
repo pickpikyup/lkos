@@ -67,16 +67,18 @@ class Repository:
         row = self.conn.execute("SELECT id FROM sources WHERE path = ?", (path,)).fetchone()
         if row:
             return int(row["id"])
+        from lkos.indexing.relocate import folder_ident
+
         cur = self.conn.execute(
-            "INSERT INTO sources(owner_id, path, created_at) VALUES (?, ?, ?)",
-            (self.owner_id, path, now_iso()),
+            "INSERT INTO sources(owner_id, path, created_at, ident) VALUES (?, ?, ?, ?)",
+            (self.owner_id, path, now_iso(), folder_ident(path)),
         )
         return int(cur.lastrowid)
 
     def list_sources(self) -> list[dict]:
         """来源文件夹及其文件数、文本块数、最近一次索引时间。"""
         rows = self.conn.execute(
-            """SELECT s.id, s.path, s.refresh, s.exclude_json, s.ocr, s.allow_online,
+            """SELECT s.id, s.path, s.refresh, s.exclude_json, s.ocr, s.allow_online, s.ident,
                       (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id AND f.tagged_at IS NOT NULL) AS tagged,
                       (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id) AS files,
                       (SELECT COUNT(*) FROM files f WHERE f.source_id = s.id AND f.status = 'failed') AS failed,
@@ -133,6 +135,30 @@ class Repository:
                 self.set_meta(f"ocr:{int(source_id)}", now_iso(precise=True))
         if sets:
             self.conn.execute(f"UPDATE sources SET {', '.join(sets)} WHERE id = ?", (*args, int(source_id)))
+
+    def set_source_ident(self, source_id: int, ident: str | None) -> None:
+        self.conn.execute("UPDATE sources SET ident = ? WHERE id = ?", (ident, int(source_id)))
+
+    def relocate_source(self, source_id: int, new_path: str) -> None:
+        """文件夹改名 / 移动：来源路径和其中所有文件的路径换成新位置（索引、设置、标签不变），并记下对应关系。"""
+        from lkos.indexing.relocate import add_relocation, folder_ident
+
+        row = self.conn.execute("SELECT path FROM sources WHERE id = ?", (int(source_id),)).fetchone()
+        if row is None:
+            raise ValueError("找不到这个文件夹")
+        old = row["path"]
+        if old == new_path:
+            return
+        if self.conn.execute("SELECT 1 FROM sources WHERE path = ?", (new_path,)).fetchone():
+            raise ValueError("新位置已经在资料库里了")
+        prefix = old.rstrip(os.sep) + os.sep
+        with self.transaction():
+            self.conn.execute("UPDATE sources SET path = ?, ident = ? WHERE id = ?",
+                              (new_path, folder_ident(new_path), int(source_id)))
+            self.conn.execute(
+                "UPDATE files SET path = ? || substr(path, ?) WHERE source_id = ? AND substr(path, 1, ?) = ?",
+                (new_path.rstrip(os.sep) + os.sep, len(prefix) + 1, int(source_id), len(prefix), prefix))
+            add_relocation(self, old, new_path)
 
     def remove_source(self, source_id: int) -> int:
         """删除来源文件夹及其全部索引（不动原文件），返回删除的文件数。"""

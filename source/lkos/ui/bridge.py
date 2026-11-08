@@ -226,6 +226,12 @@ class IndexWorker:
             app.close()
 
     def _enqueue_stale(self, app: App) -> None:
+        from lkos.indexing.relocate import relocate_missing
+
+        try:
+            relocate_missing(app.repo)
+        except Exception as e:  # noqa: BLE001
+            log.warning("检查改名的文件夹时出错：%s", e)
         for s in due_sources(app.repo.list_sources()):
             self.enqueue(s["path"], background=True)
 
@@ -621,8 +627,20 @@ class Bridge(ChatMixin, ModelsMixin):
         return self._call(run)
 
     # ---------- 资料库 ----------
+    def _relocate(self) -> list[dict]:
+        """认出改名 / 移动的文件夹（找不到的来源才会去找，平时几乎不花时间）。"""
+        from lkos.indexing.relocate import relocate_missing
+
+        try:
+            moved = relocate_missing(self._app.repo)
+        except Exception as e:  # noqa: BLE001 - 不影响打开资料库
+            log.warning("检查改名的文件夹时出错：%s", e)
+            return []
+        return moved
+
     def library(self) -> dict:
         def run():
+            relocated = self._relocate()
             problems = []
             for f in self._app.repo.failed_files():
                 err = f.error or ""
@@ -636,7 +654,7 @@ class Bridge(ChatMixin, ModelsMixin):
                     "stats": {"sources": s["sources"], "files": s["files_by_status"].get("indexed", 0),
                               "chunks": s["chunks_total"]},
                     "index": self._indexer.state, "paused": self._indexer._paused.is_set(),
-                    "ocr_available": ocr_available(), "tags": self._app.repo.all_tags(60)}
+                    "ocr_available": ocr_available(), "tags": self._app.repo.all_tags(60), "relocated": relocated}
         return self._call(run)
 
     def choose_folder(self) -> dict:
@@ -658,6 +676,13 @@ class Bridge(ChatMixin, ModelsMixin):
         if not folder.is_dir():
             return {"error": f"找不到这个文件夹：{folder}"}
         folder = folder.resolve()
+        from lkos.indexing.relocate import folder_ident
+
+        ident = folder_ident(folder)
+        for src in self._call(self._sources):
+            if src.get("ident") == ident and src["path"] != str(folder) and src["missing"]:
+                r = self.relocate_to(src["id"], str(folder))       # 改名 / 移动前的那个文件夹：更新位置，不重建
+                return {**r, "relocated": src["path"]} if r.get("ok") else r
         n = self._call(lambda: sum(1 for _ in self._app.indexer.walk(folder)))
         if n == 0:
             return {"error": "这个文件夹里没有可以索引的文件。可以点“资料体检”看看里面都是什么格式"}
@@ -675,7 +700,47 @@ class Bridge(ChatMixin, ModelsMixin):
             if path == notes_dir:
                 return "apple_notes"
             return "obsidian" if obsidian.is_vault(path) else "folder"
-        return [{**x, "kind": kind(x["path"])} for x in self._app.repo.list_sources()]
+        return [{**x, "kind": kind(x["path"]), "missing": x["path"] != notes_dir and not Path(x["path"]).is_dir()}
+                for x in self._app.repo.list_sources()]
+
+    def relocate_to(self, source_id: int, path: str) -> dict:
+        """手动重新定位：找不到的文件夹指到新位置。索引、设置、标签保留，随后按新位置更新一次。"""
+        folder = Path(str(path)).expanduser()
+        if not folder.is_dir():
+            return {"error": f"找不到这个文件夹：{folder}"}
+        folder = folder.resolve()
+        src = next((x for x in self._call(self._sources) if x["id"] == int(source_id)), None)
+        if src is None:
+            return {"error": "资料库里没有这个文件夹"}
+        old = src["path"]
+        if src["files"]:
+            from lkos.indexing.relocate import _verify
+
+            check = [f.path for f in self._call(lambda: self._app.repo.files_of_source(src["id"]))[:50]]
+            if not _verify(old, str(folder), check):
+                return {"error": "这个文件夹里没有原来索引过的文件，看起来不是同一个文件夹。"
+                                 "要换成这个文件夹，请先移除原来的，再添加这个"}
+        try:
+            self._call(lambda: self._app.repo.relocate_source(src["id"], str(folder)))
+        except ValueError as e:
+            return {"error": str(e)}
+        log.info("文件夹重新定位：%s → %s", old, folder)
+        self._indexer.enqueue(str(folder))          # 期间文件的增删改，按新位置更新一次（没变的文件不会重新解析）
+        self._emit({"type": "library_changed"})
+        return {"ok": True, "folder": str(folder), "old": old}
+
+    def choose_relocate(self, source_id: int) -> dict:
+        if self._window is None:
+            return {"error": "窗口还没准备好"}
+        try:
+            import webview
+            kind = webview.FileDialog.FOLDER if hasattr(webview, "FileDialog") else webview.FOLDER_DIALOG
+        except ImportError:
+            kind = "folder"
+        picked = self._window.create_file_dialog(kind)
+        if not picked:
+            return {"cancelled": True}
+        return self.relocate_to(source_id, picked[0] if isinstance(picked, (list, tuple)) else picked)
 
     def obsidian_vaults(self) -> dict:
         """Obsidian 打开过的仓库（读 Obsidian 自己的 obsidian.json），标出哪些已经在资料库里。"""
@@ -906,7 +971,16 @@ class Bridge(ChatMixin, ModelsMixin):
         return {"error": problem} if problem else {"ok": True}
 
     # ---------- 打开文件 ----------
+    def _current_path(self, path: str) -> str:
+        """以前对话里的出处：文件夹改过名的，换成现在的路径。"""
+        if Path(str(path)).exists():
+            return str(path)
+        from lkos.indexing.relocate import resolve_path
+
+        return self._call(lambda: resolve_path(self._app.repo, str(path)))
+
     def open_file(self, path: str) -> dict:
+        path = self._current_path(path)
         notes_root = str(apple_notes.export_dir(self._app.home).resolve()) + os.sep
         nid = apple_notes.note_id_for(self._app.home, str(path)) if str(path).startswith(notes_root) else None
         if nid:                                   # 备忘录：在备忘录应用里显示这一条
@@ -920,7 +994,7 @@ class Bridge(ChatMixin, ModelsMixin):
         return {"error": problem} if problem else {"ok": True}
 
     def reveal(self, path: str) -> dict:
-        problem = self._opener(str(path), reveal=True)
+        problem = self._opener(self._current_path(path), reveal=True)
         return {"error": problem} if problem else {"ok": True}
 
 

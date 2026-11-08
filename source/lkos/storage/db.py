@@ -66,6 +66,7 @@ ADDED_COLUMNS = {
         ("exclude_json", "TEXT NOT NULL DEFAULT '{}'"),      # {"dirs": [...], "exts": [...]}
         ("ocr", "INTEGER NOT NULL DEFAULT 0"),
         ("allow_online", "INTEGER NOT NULL DEFAULT 1"),       # 是否允许把这个文件夹的内容发往在线模型
+        ("ident", "TEXT"),                                    # 文件夹身份（磁盘:inode），改名 / 移动后用来认出它
     ],
     "files": [
         ("tagged_at", "TEXT"),                                # 自动生成标签的时间；内容变化后清空，重新生成

@@ -286,6 +286,11 @@ def run_daemon(home: Path | None = None, config_path: Path | None = None, check_
             if applock.is_locked_elsewhere():
                 write_status(home, state="app-open", folder=None)
             else:
+                try:
+                    from lkos.indexing.relocate import relocate_missing
+                    relocate_missing(app.repo)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("检查改名的文件夹时出错：%s", e)
                 for s in due_sources(app.repo.list_sources()):
                     if stop.is_set() or applock.is_locked_elsewhere():
                         break

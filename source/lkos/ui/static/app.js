@@ -120,6 +120,7 @@
       const lib = await api("library");
       S.lib = lib; S.sources = lib.sources; S.stats = lib.stats; S.index = lib.index; S.paused = lib.paused;
       S.problemsCount = lib.problems.length;
+      for (const m of lib.relocated || []) toast(`认出改名的文件夹：${m.old.split("/").pop()} → ${m.new.split("/").pop()}，索引已保留`);
       if (S.view === "lib" || !S.vaults) S.vaults = (await api("obsidian_vaults")).vaults || [];
     } catch (e) { /* 忽略 */ }
     renderSide(); renderStatus();
@@ -1387,11 +1388,16 @@
       const active = i.folder === s.path && (i.state === "running" || i.state === "paused");
       const last = s.last_indexed ? new Date(s.last_indexed).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : null;
       let state;
-      if (active) state = `<span class="state" style="color:var(--run-ink)">${i.kind === "tags" ? "生成标签中" : s.last_indexed ? "更新中" : "首次索引中"}</span>`;
+      if (s.missing) state = `<span class="state" style="color:var(--warn-ink)"><span class="dot" style="background:var(--warn-dot)"></span>找不到文件夹</span>`;
+      else if (active) state = `<span class="state" style="color:var(--run-ink)">${i.kind === "tags" ? "生成标签中" : s.last_indexed ? "更新中" : "首次索引中"}</span>`;
       else if (!s.last_indexed) state = `<span class="state" style="color:var(--warn-ink)"><span class="dot" style="background:var(--warn-dot)"></span>还没索引完</span>`;
       else state = `<span class="state" style="color:var(--ok-ink)"><span class="dot" style="background:var(--ok-dot)"></span>已是最新</span>`;
       h += `<section class="folder" aria-label="${esc(name)}"><div class="row"><h2>${esc(name)}</h2><span class="path">${s.kind === "apple_notes" ? "每次更新时从“备忘录”应用同步（只读正文，不含附件和加锁的备忘录）" : (s.kind === "obsidian" ? "Obsidian 仓库 · " : "") + esc(s.path)}</span><span class="grow"></span>${state}</div>`;
-      if (active) {
+      if (s.missing) {
+        h += `<p class="sub" style="margin:0">原来的位置已经没有这个文件夹了：可能改了名、移到了别处，或在没接上的外接硬盘里。
+          在原位置附近改名、移动的，LKOS 会自动认出来；认不出来时点“重新定位”选它现在的位置，索引和设置都会保留，不用重建。
+          不要了就点“移除”。在这之前，它的内容仍然可以检索。</p>`;
+      } else if (active) {
         const pct = i.total ? Math.floor((i.done / i.total) * 100) : 0;
         h += `<div class="bar" role="progressbar" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="索引进度"><div style="width:${pct}%"></div></div>
           <div class="facts"><span>${fmt(i.done)} / ${fmt(i.total)} 个文件</span><span>已可检索 ${fmt(s.chunks)} 个文本块</span><span>最近修改的文件优先</span>${i.file ? `<span class="path">${esc(i.file)}</span>` : ""}</div>`;
@@ -1413,9 +1419,9 @@
       const confirming = S.confirmRemove === s.id;
       h += `<div class="row" style="align-items:center">
         <span class="grow"></span>
-        ${active ? (i.state === "paused" && i.reason === "manual" ? '<button type="button" class="btn small" data-action="resume">继续</button>' : '<button type="button" class="btn small" data-action="pause">暂停</button>') + '<button type="button" class="btn small" data-action="stop-index">停止</button>'
+        ${s.missing ? `<button type="button" class="btn small primary" data-relocate="${s.id}">重新定位…</button>` : active ? (i.state === "paused" && i.reason === "manual" ? '<button type="button" class="btn small" data-action="resume">继续</button>' : '<button type="button" class="btn small" data-action="pause">暂停</button>') + '<button type="button" class="btn small" data-action="stop-index">停止</button>'
           : `<button type="button" class="btn small" data-update="${esc(s.path)}">立即更新</button>`}
-        ${!active && s.files && s.tagged < s.files - s.failed ? `<button type="button" class="btn small" data-gen-tags="${esc(s.path)}">生成标签</button>` : ""}
+        ${!s.missing && !active && s.files && s.tagged < s.files - s.failed ? `<button type="button" class="btn small" data-gen-tags="${esc(s.path)}">生成标签</button>` : ""}
         <button type="button" class="btn small" data-folder-settings="${s.id}" aria-expanded="${S.libEdit === s.id}">设置</button>
         ${confirming ? `<span class="sub">只删除索引，不动原文件</span><button type="button" class="btn small danger" data-remove-yes="${s.id}">确认移除</button><button type="button" class="btn small" data-action="remove-no">取消</button>`
           : `<button type="button" class="btn small danger" data-remove="${s.id}">移除</button>`}
@@ -1491,7 +1497,9 @@
 
   async function addPath(p) {
     const r = await api("add_folder", p);
-    if (r.error) toast(r.error); else toast(`已添加，开始索引 ${fmt(r.files)} 个文件`);
+    if (r.error) toast(r.error);
+    else if (r.relocated) toast(`这是改名前的“${r.relocated.split("/").pop()}”，已更新位置，索引和设置都保留`);
+    else toast(`已添加，开始索引 ${fmt(r.files)} 个文件`);
     refreshLibrary();
   }
 
@@ -1499,6 +1507,7 @@
     try {
       const r = await api("choose_folder");
       if (r.error) toast(r.error);
+      else if (r.relocated) { toast(`这是改名前的“${r.relocated.split("/").pop()}”，已更新位置，索引和设置都保留`); showView("lib"); }
       else if (!r.cancelled) { toast(`已添加，开始索引 ${fmt(r.files)} 个文件`); showView("lib"); }
       refreshLibrary();
     } catch (e) { toast(String(e.message || e)); }
@@ -1584,6 +1593,13 @@
     if (d.scopeClearFile) { S.scope.path = null; return renderScope(); }
     if (d.copySrc) { const s = currentSources().find((x) => x.n === Number(d.copySrc)); if (s) copy(s.text); return; }
     if (d.update) { await api("update_source", d.update); toast("已加入更新队列"); return; }
+    if (d.relocate) {
+      const r = await api("choose_relocate", Number(d.relocate));
+      if (r.cancelled) return;
+      if (r.error) { toast(r.error); return; }
+      toast(`已更新位置：${r.folder.split("/").pop()}，索引和设置都保留`);
+      return refreshLibrary();
+    }
     if (d.addVault) {
       const r = await api("add_folder", d.addVault);
       if (r.error) { toast(r.error); return; }
