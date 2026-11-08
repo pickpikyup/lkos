@@ -19,12 +19,16 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Callable
 
 from lkos.errors import LkosError
+from lkos.logs import get_logger
+
+log = get_logger("notes")
 
 DIR_NAME = "apple-notes"
 MANIFEST = "manifest.json"
@@ -33,6 +37,8 @@ OSA_TIMEOUT = 600
 
 # 一次取回所有备忘录（按文件夹批量取属性，比逐条快得多）
 JXA = r"""
+ObjC.import('Foundation');
+function run(argv) {
 const app = Application('Notes');
 const out = [];
 function pathOf(f) {
@@ -65,11 +71,18 @@ for (const f of app.folders()) {
     bodies = ids.map((_, i) => { if (locked[i]) return ''; try { return n[i].body(); } catch (e2) { return ''; } });
   }
   for (let i = 0; i < ids.length; i++) {
-    out.push({ id: ids[i], name: names[i], path: path, modified: mods[i].toISOString(),
-               created: created[i].toISOString(), locked: !!locked[i], body: locked[i] ? '' : (bodies[i] || '') });
+    let m = '', c = '';
+    try { m = mods[i].toISOString(); } catch (e) {}
+    try { c = created[i].toISOString(); } catch (e) {}
+    out.push({ id: String(ids[i]), name: String(names[i] || ''), path: path, modified: m, created: c,
+               locked: !!locked[i], body: locked[i] ? '' : String(bodies[i] || '') });
   }
 }
-JSON.stringify(out);
+// 结果直接以 UTF-8 写进文件：不经过 osascript 的标准输出（中文、表情符号在那里可能被转码弄坏）
+const s = JSON.stringify(out);
+if (argv.length && $(s).writeToFileAtomicallyEncodingError(argv[0], true, $.NSUTF8StringEncoding, $())) return 'ok:' + out.length;
+return s;
+}
 """
 
 
@@ -92,23 +105,42 @@ def fetch_notes() -> list[dict]:
     """向备忘录应用要全部备忘录（只在 macOS 上可用）。"""
     if not available():
         raise LkosError("只有 macOS 上才能读取备忘录")
-    try:
-        p = subprocess.run(["osascript", "-l", "JavaScript", "-e", JXA], capture_output=True, text=True,
-                           timeout=OSA_TIMEOUT)
-    except subprocess.TimeoutExpired as e:
-        raise LkosError("读取备忘录超时（备忘录很多时第一次会比较慢），请稍后再试") from e
+    env = {**os.environ, "LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8"}
+    with tempfile.TemporaryDirectory(prefix="lkos-notes-") as tmp:
+        out_file = Path(tmp) / "notes.json"
+        try:
+            p = subprocess.run(["osascript", "-l", "JavaScript", "-e", JXA, str(out_file)], capture_output=True,
+                               timeout=OSA_TIMEOUT, env=env)
+        except subprocess.TimeoutExpired as e:
+            raise LkosError("读取备忘录超时（备忘录很多时第一次会比较慢），请稍后再试") from e
+        raw = out_file.read_bytes() if out_file.exists() else b""
+    stdout = (p.stdout or b"").decode("utf-8", errors="replace").strip()
     if p.returncode != 0:
-        err = (p.stderr or "").strip()
+        err = (p.stderr or b"").decode("utf-8", errors="replace").strip()
         if "-1743" in err or "Not authorized" in err or "不允许" in err:
             raise LkosError("没有权限读取备忘录：请在“系统设置 → 隐私与安全性 → 自动化”里，允许 LKOS（或终端）控制“备忘录”")
         if "-600" in err or "isn't running" in err:
             raise LkosError("备忘录应用没有响应，请打开一次“备忘录”后再试")
         raise LkosError(f"读取备忘录失败：{err[:200] or p.returncode}")
+    return parse_output(raw.decode("utf-8", errors="replace") if raw else stdout)
+
+
+def parse_output(text: str) -> list[dict]:
+    """解析 JXA 返回的 JSON；容忍控制字符、坏的代理字符等，解析不了时在日志里写明位置。"""
+    text = (text or "").strip().lstrip("\ufeff")
+    if not text or text.startswith("ok:"):
+        return []
     try:
-        data = json.loads(p.stdout or "[]")
+        data = json.loads(text, strict=False)
     except ValueError as e:
-        raise LkosError("读取备忘录失败：返回的内容无法解析") from e
-    return data if isinstance(data, list) else []
+        pos = getattr(e, "pos", None)
+        log.warning("备忘录返回的内容无法解析：%s（共 %d 字符，开头：%r）", e, len(text), text[:60])
+        if pos is not None:
+            log.warning("出错位置附近：%r", text[max(0, pos - 40): pos + 40])
+        raise LkosError("读取备忘录失败：返回的内容无法解析（详情已写入日志，可以把日志发给开发者）") from e
+    if not isinstance(data, list):
+        return []
+    return [n for n in data if isinstance(n, dict)]
 
 
 # ---------------- HTML → Markdown ----------------

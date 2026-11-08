@@ -813,6 +813,7 @@ class Bridge(ChatMixin, ModelsMixin):
         try:
             stats = self._call(lambda: apple_notes.sync(self._app.home, self._app.indexer.notes_fetch))
         except LkosError as e:
+            log.warning("添加 Mac 备忘录失败：%s", e)
             return {"error": str(e)}
         folder = str(apple_notes.export_dir(self._app.home).resolve())
         def add():

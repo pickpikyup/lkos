@@ -1,6 +1,7 @@
 """Mac 备忘录：HTML 转 Markdown、导出（增量、改名、删除、跳过加锁与最近删除）、索引与检索、打开。"""
 
 import json
+from pathlib import Path
 import os
 import time
 
@@ -118,3 +119,24 @@ def test_bridge_add_and_open_notes(tmp_path, monkeypatch):
         assert b.add_notes()["error"]
     finally:
         b._close()
+
+
+def test_fetch_reads_utf8_file_and_tolerates_bad_output(monkeypatch):
+    """JXA 把结果以 UTF-8 写进文件（不经过 osascript 的标准输出）；控制字符、BOM 不影响解析。"""
+    import subprocess
+
+    data = [{"id": "x-coredata://9", "name": "表情 😀 与 Café", "path": ["iCloud", "备忘录"], "modified": "",
+             "created": "", "locked": False, "body": "<div>第一行\u0001</div>"}]
+
+    def fake_run(cmd, **kw):
+        assert kw["env"]["LC_ALL"].endswith("UTF-8")
+        Path(cmd[-1]).write_bytes(json.dumps(data, ensure_ascii=False).replace("\\u0001", "\u0001").encode("utf-8"))
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"ok:1", stderr=b"")
+
+    monkeypatch.setattr(apple_notes, "available", lambda: True)
+    monkeypatch.setattr(apple_notes.subprocess, "run", fake_run)
+    notes = apple_notes.fetch_notes()
+    assert notes[0]["name"] == "表情 😀 与 Café" and "第一行" in notes[0]["body"]
+    assert apple_notes.parse_output("﻿[]") == [] and apple_notes.parse_output("ok:0") == []
+    with pytest.raises(apple_notes.LkosError, match="无法解析"):
+        apple_notes.parse_output('[{"id": "x", "name": 未加引号}]')
