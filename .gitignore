@@ -52,3 +52,6 @@ __pycache__/
 build/
 dist/
 .DS_Store
+
+# 设计文档含敏感信息，不进 Git
+design/
