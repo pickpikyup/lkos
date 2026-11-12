@@ -40,7 +40,6 @@
 | --- | --- | --- |
 | `LKOS.app` | 双击打开的应用 | 是 |
 | `README.md` | 本说明 | 是 |
-| `design/` | 设计文档、实测报告、项目摘要（索引见 `design/README.md`） | 是 |
 | `source/` | 程序代码、测试、安装与测试脚本 | 是 |
 | `data/` | **私人数据**：文档索引数据库、问答记录、配置、日志（`data/logs/`） | **否** |
 | `.venv/` | Python 运行环境 | 否 |
@@ -65,7 +64,7 @@ source/scripts/test.sh          # 单元测试 + 功能测试 + 覆盖率（不�
 source/scripts/test.sh --live   # 加上真实模型测试
 ```
 
-测试的临时文件在 `.pytest_tmp/`（不进 Git），可以随时删除。配置项与实现取舍见 `design/implementation-notes.md`。
+测试的临时文件在 `.pytest_tmp/`（不进 Git），可以随时删除。
 
 命令行还有：`lkos source set`（文件夹设置）、`lkos tags list / auto`（标签）、`lkos daemon install / uninstall / status`（后台服务）。
 
