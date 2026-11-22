@@ -96,9 +96,19 @@ class RetrievedChunk:
 
     @property
     def file_name(self) -> str:
+        if self.file_type == "web":          # 联网搜索的网页：显示网站域名
+            host = self.file_path.split("//", 1)[-1].split("/", 1)[0].lower()
+            return host[4:] if host.startswith("www.") else host
         return self.file_path.rsplit("/", 1)[-1]
 
+    @property
+    def is_web(self) -> bool:
+        return self.file_type == "web"
+
     def describe(self) -> str:
+        if self.file_type == "web":
+            title = self.location.describe("web")
+            return f"网页 · {self.file_name}" + (f" · {title}" if title else "")
         loc = self.location.describe(self.file_type)
         return f"{self.file_name} · {loc}" if loc else self.file_name
 

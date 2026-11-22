@@ -557,3 +557,27 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .pending .t { flex: 1; min-width: 0; }
 .pending.ask { color: var(--ink); }
 .problems .acts { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* 联网搜索开关（输入框旁） */
+.cbtn.web-btn { gap: 5px; }
+.cbtn.web-btn.on { background: var(--accent-soft, #e8f0fe); border-color: var(--accent, #3b6fd8); color: var(--accent, #3b6fd8); }
+.cbtn.web-btn.on svg { color: var(--accent, #3b6fd8); }
+/* 推理模型的思考过程 */
+details.think { margin: 10px 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--soft); }
+details.think > summary { cursor: pointer; padding: 8px 12px; color: var(--muted); font-size: 13px; list-style: none; }
+details.think > summary::before { content: "▸ "; }
+details.think[open] > summary::before { content: "▾ "; }
+details.think .think-body { max-height: 260px; overflow: auto; padding: 0 12px 10px; color: var(--muted); font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; }
+.steps .sub.warn { color: #b26a00; }
+/* 网页出处 */
+.webmark { flex: none; margin-right: 6px; padding: 0 6px; border-radius: 4px; background: var(--soft); border: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 18px; }
+.src .loc.url { word-break: break-all; font-size: 11.5px; }
+.web-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 10px; font-size: 13px; }
+.web-form select, .web-form input { height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg, #fff); color: inherit; font: inherit; }
+.web-form input { width: 220px; }
+.web-key { display: inline-flex; align-items: center; gap: 8px; }
+.web-key[hidden] { display: none; }
+.web-test-msg { color: var(--muted); }
+.web-test-msg.bad { color: #b3261e; }
+.generating .web-btn { flex: none; }
+.generating .web-btn span { flex: none; color: inherit; }

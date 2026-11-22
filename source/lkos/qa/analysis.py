@@ -13,15 +13,20 @@ import re
 from contextlib import nullcontext
 from typing import Callable
 
-from lkos.errors import Cancelled, LkosError
+from lkos.errors import Cancelled, LkosError, ModelUnavailableError
+from lkos.gateway.gateway import out_of_budget_message
 from lkos.qa.citations import validate_citations
 from lkos.qa.history import conversation_lang, history_messages, messages_tokens, prior_chunks
-from lkos.qa.prompt import LABELS, fit_context, format_source, lang_key
+from lkos.qa.prompt import LABELS, fit_context, format_source, lang_key, with_web_note
 from lkos.types import Answer
 
 TASK = "knowledge_qa"
 PLAN_TOKENS = 160
 KEYWORD_TOKENS = 120
+ONLINE_SHORT_TOKENS = 2048   # 在线模型拆方面 / 写关键词的输出上限：推理模型要先思考，160 / 120 不够用
+# 联网搜索：(每次结果数, 取正文的网页数, 每个网页最多多少字)
+WEB_LOCAL = (3, 2, 600)
+WEB_ONLINE = (5, 3, 2000)
 ANALYSIS_TOKENS = 900
 PER_ASPECT = 3
 PER_LANG = 3
@@ -79,17 +84,25 @@ def parse_aspects(text: str, limit: int = 4) -> list[str]:
     return out[:limit]
 
 
+def _budget_note(result, what: str) -> dict:
+    """短输出（拆方面、写关键词）的额度被思考用完时，给界面一句说明。"""
+    if getattr(result, "out_of_budget", False):
+        return {"note": f"模型的输出额度都用在了思考上，{what}"}
+    return {}
+
+
 class Analyzer:
-    def __init__(self, cfg, retriever, gateway, marker=None):
+    def __init__(self, cfg, retriever, gateway, marker=None, web=None):
         self.cfg = cfg
         self.retriever = retriever
         self.gateway = gateway
         self.marker = marker
+        self.web = web        # 联网搜索（WebSearcher）；开关在界面上，随时可改
 
     def analyze(self, question: str, on_progress: Callable[[str, int, int], None] | None = None, on_context=None,
                 on_token=None, cancelled: Callable[[], bool] | None = None, scope=None,
                 model_override: str | None = None, history=None, pinned=None,
-                confirm=None) -> tuple[Answer, list[str], dict]:
+                confirm=None, on_thinking=None) -> tuple[Answer, list[str], dict]:
         """返回 (回答, 拆出的方面, {"keywords": 各语言关键词, "lang_hits": 各语言命中数})。
         on_progress(阶段, 已完成, 总数[, 详情])：plan / keywords / search / write。
         history：同一对话之前的轮次（list[Turn]）；回答语言默认中文，对话一直用英文 / 法文时用那种语言。
@@ -97,10 +110,10 @@ class Analyzer:
         with (self.marker.active() if self.marker else nullcontext()):
             return self._run(question.strip(), on_progress or (lambda *a: None), on_context, on_token,
                              cancelled or (lambda: False), scope, model_override, history or [], pinned or [],
-                             confirm)
+                             confirm, on_thinking)
 
     def _run(self, q, progress, on_context, on_token, cancelled, scope, model_override, turns=(), pinned=(),
-             confirm=None):
+             confirm=None, on_thinking=None):
         if not q:
             raise LkosError("请输入要分析的问题")
         key = conversation_lang([t.question for t in turns] + [q])
@@ -111,40 +124,60 @@ class Analyzer:
         pc = self.cfg.providers.get(ref.split("/", 1)[0])
         online = bool(pc and pc.is_remote)
         per_aspect, per_lang = (PER_ASPECT * 2, PER_LANG * 2) if online else (PER_ASPECT, PER_LANG)
+        short = dict(model_override=model_override, log_as="analysis", on_thinking=on_thinking)
         progress("plan", 0, 1)
         plan, _ = self.gateway.chat(TASK, [{"role": "user", "content": P["plan"].format(q=q)}],
-                                    model_override=model_override, max_tokens=PLAN_TOKENS, log_as="analysis")
+                                    max_tokens=ONLINE_SHORT_TOKENS if online else PLAN_TOKENS, **short)
         aspects = parse_aspects(plan.text) or [q]
-        progress("plan", 1, 1, {"aspects": aspects})
+        progress("plan", 1, 1, {"aspects": aspects, **_budget_note(plan, "没拆出方面，按整个问题检索")})
         if cancelled():
             raise Cancelled("已停止分析")
 
         progress("keywords", 0, 1)
         kw_out, _ = self.gateway.chat(TASK, [{"role": "user", "content": KEYWORD_PROMPT.format(q=q)}],
-                                      model_override=model_override, max_tokens=KEYWORD_TOKENS, log_as="analysis")
+                                      max_tokens=ONLINE_SHORT_TOKENS if online else KEYWORD_TOKENS, **short)
         keywords = parse_keywords(kw_out.text)
-        progress("keywords", 1, 1, {"keywords": keywords})
+        progress("keywords", 1, 1, {"keywords": keywords, **_budget_note(kw_out, "没写出关键词")})
 
         extra = {"scope": scope} if scope is not None and not scope.empty else {}
         # 检索任务：每个方面（按提问语言）+ 每种语言的关键词（只在该语言的资料里找）
         base_q = q if not turns else f"{turns[-1].question}\n{q}"
         jobs = [("aspect", a, f"{base_q}\n{a}", "auto", per_aspect) for a in aspects]
         jobs += [("lang", lang, keywords[lang], lang, per_lang) for lang in LANGS if keywords.get(lang)]
-        groups, lang_hits = [], {}
+        # 联网搜索：原问题 + （在线模型）关键词、前两个方面；开关在执行到这一步时才读，随时打开 / 关闭都对没做的检索生效
+        if self.web is not None:
+            wk = keywords.get("zh" if key == "zh" else "en") or ""
+            wq = [q[:120]]
+            if online and wk:
+                wq += [wk] + [f"{wk.split()[0]} {a}" for a in aspects[:2] if a != q]
+            jobs += [("web", w, w, "", 0) for w in dict.fromkeys(wq)]
+        groups, lang_hits, web_n = [], {}, 0
+        wk_, wf, wc = WEB_ONLINE if online else WEB_LOCAL
         for i, (kind, label, query, lang, k) in enumerate(jobs, start=1):
             if cancelled():
                 raise Cancelled("已停止分析")
+            if kind == "web":
+                if not self.web.enabled():
+                    continue
+                progress("search", i - 1, len(jobs), {"current": f"联网：{label}"})
+                hits = self.web.chunks(query, k=wk_, fetch=wf, max_chars=wc, cancelled=cancelled)
+                web_n += len(hits)
+                groups.append(hits)
+                continue
             progress("search", i - 1, len(jobs), {"current": LANG_NAMES.get(label, label) if kind == "lang" else label})
             hits = self.retriever.search(query, k=k, lang=lang, **extra)
             groups.append(hits)
             if kind == "lang":
                 lang_hits[label] = len(hits)
-        progress("search", len(jobs), len(jobs), {"lang_hits": lang_hits})
+        done = {"lang_hits": lang_hits}
+        if self.web is not None and self.web.run.queries:
+            done["web_pages"] = web_n
+        progress("search", len(jobs), len(jobs), done)
         info = {"keywords": keywords, "lang_hits": lang_hits}
 
         # 轮流取每组的第 1、第 2……个片段，去重，保证每个方面、每种语言都有资料进入上下文
         ordered, seen = list(pinned), {c.chunk_id for c in pinned}
-        for rank in range(max(per_aspect, per_lang)):
+        for rank in range(max([per_aspect, per_lang] + [len(g) for g in groups])):
             for hits in groups:
                 if rank < len(hits) and hits[rank].chunk_id not in seen:
                     seen.add(hits[rank].chunk_id)
@@ -171,10 +204,13 @@ class Analyzer:
         src_label, _ = LABELS[lang_key(key)]
         sources = "\n\n".join(format_source(i, c) for i, c in enumerate(context, start=1))
         result, _ = self.gateway.chat(
-            TASK, [{"role": "system", "content": P["system"]}, *hist,
+            TASK, [{"role": "system", "content": with_web_note(P["system"], context, key)}, *hist,
                    {"role": "user", "content": P["user"].format(src_label=src_label, sources=sources, q=q,
                                                                 aspects=aspect_text)}],
-            model_override=model_override, on_token=on_token, max_tokens=out_tokens, log_as="analysis")
+            model_override=model_override, on_token=on_token, max_tokens=out_tokens, log_as="analysis",
+            on_thinking=on_thinking)
+        if result.out_of_budget:
+            raise ModelUnavailableError(out_of_budget_message(result, out_tokens))
         text, citations, invalid = validate_citations(result.text, context)
         return Answer(text=text, citations=citations, invalid_refs=invalid, no_context=False, context=context,
                       ttft_ms=result.ttft_ms, latency_ms=result.latency_ms, input_tokens=result.input_tokens,

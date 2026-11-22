@@ -44,7 +44,9 @@ log = get_logger("app")
 ilog = get_logger("index")
 LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
 SETTINGS_FILE = "ui-settings.json"
-DEFAULT_SETTINGS = {"dev_mode": False, "auto_tags": True, "confirm_online": True}
+DEFAULT_SETTINGS = {"dev_mode": False, "auto_tags": True, "confirm_online": True,
+                    # 联网搜索：输入框旁的按钮随时开关；搜索服务和 Tavily 密钥在“设置”里
+                    "web_search": False, "web_provider": "bing", "web_key": ""}
 
 AUTO_CHECK_SECONDS = 600       # 每 10 分钟看一次有没有到期的文件夹
 
@@ -64,8 +66,8 @@ def chunk_dict(n: int, c: RetrievedChunk, cited: set[int] | None = None) -> dict
 
 
 def _job_cb(cb: dict) -> dict:
-    """任务回调里给模型服务用的部分（去掉 qid）。"""
-    return {k: v for k, v in cb.items() if k != "qid"}
+    """任务回调里给模型服务用的部分（去掉 qid；思考过程只有问答 / 对话 / 深度分析单独传）。"""
+    return {k: v for k, v in cb.items() if k not in ("qid", "on_thinking")}
 
 
 def system_open(path: str, reveal: bool = False) -> str | None:
@@ -350,6 +352,7 @@ class Bridge(ChatMixin, ModelsMixin):
         self._app: App = self._qa.submit(lambda: _open(**kw)).result()
         self._ring = setup_logging(self._app.home)
         self._settings = self._load_settings()
+        self._wire_web()
         set_level(self._settings["dev_mode"])
         log.info("应用启动：数据目录 %s，问答模型 %s，检索策略 %s", self._app.home,
                  self._app.cfg.tasks["knowledge_qa"].default_model, self._app.cfg.retrieval.strategy)
@@ -386,7 +389,13 @@ class Bridge(ChatMixin, ModelsMixin):
         def run():
             self._app.close()
             self._app = App.open(**self._kw)
+            self._wire_web()
         self._call(run)
+
+    def _wire_web(self) -> None:
+        """联网搜索每次要用时才读设置：开关随时改、马上生效（包括正在进行、还没检索到的那一步）。"""
+        if getattr(self._app, "web", None) is not None:
+            self._app.web.settings = lambda: self._settings
 
     def _restart_indexer(self) -> None:
         self._indexer.shutdown()
@@ -459,7 +468,14 @@ class Bridge(ChatMixin, ModelsMixin):
                 raise Cancelled("已停止生成")
             self._emit({"type": "token", "qid": qid, "text": t})
 
-        cb = {"on_context": on_context, "on_progress": on_progress, "on_token": on_token,
+        def on_thinking(t: str) -> None:
+            if self._cancel.is_set():
+                raise Cancelled("已停止生成")
+            self._emit({"type": "thinking", "qid": qid, "text": t})
+
+        if getattr(self._app, "web", None) is not None:
+            self._app.web.begin()
+        cb = {"on_context": on_context, "on_progress": on_progress, "on_token": on_token, "on_thinking": on_thinking,
               "cancelled": self._cancel.is_set, "qid": qid}
         try:
             record = work(cb, t0)
@@ -1004,6 +1020,11 @@ class Bridge(ChatMixin, ModelsMixin):
                 self._indexer.enqueue(src["path"], background=True, kind="tags")
         if key == "dev_mode":
             set_level(bool(value))
+        if key == "web_search":
+            log.info("联网搜索：%s%s", "打开" if value else "关闭",
+                     "（正在进行的回答里还没做的检索也按新设置）" if self._busy.is_set() else "")
+        if key == "web_provider":
+            log.info("联网搜索服务：%s", value)
             log.info("开发者模式已%s（日志级别：%s）", "开启" if value else "关闭", "调试" if value else "信息")
         return dict(self._settings)
 
@@ -1056,6 +1077,27 @@ class Bridge(ChatMixin, ModelsMixin):
                 return {"ok": True}
         problem = self._opener(str(path))
         return {"error": problem} if problem else {"ok": True}
+
+    def open_url(self, url: str) -> dict:
+        """出处里的网页：用默认浏览器打开（只接受 http / https）。"""
+        url = str(url or "")
+        if not re.match(r"^https?://", url, re.I):
+            return {"error": "不是网页地址"}
+        import webbrowser
+
+        try:
+            webbrowser.open(url)
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"无法打开：{e}"}
+        return {"ok": True}
+
+    def test_web_search(self) -> dict:
+        """设置页“测试”：按当前搜索服务搜一次。"""
+        if self._app.cfg.privacy.offline_mode:
+            return {"ok": False, "message": "离线模式已开启，不能联网"}
+        msg = self._app.web.check()
+        log.info("测试联网搜索：%s", msg)
+        return {"ok": not msg.startswith("不可用"), "message": msg}
 
     def reveal(self, path: str) -> dict:
         problem = self._opener(self._current_path(path), reveal=True)

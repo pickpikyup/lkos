@@ -66,6 +66,10 @@
           <button type="button" class="cbtn" id="mode-btn" aria-haspopup="menu" aria-expanded="false">
             <span id="mode-label">对话</span><svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4l2.5 2.5L7.5 4"/></svg>
           </button>
+          <button type="button" class="cbtn web-btn" id="web-btn" aria-pressed="false" title="联网搜索">
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M1.8 8h12.4M8 1.8c1.8 1.7 2.7 3.8 2.7 6.2S9.8 12.5 8 14.2C6.2 12.5 5.3 10.4 5.3 8S6.2 3.5 8 1.8z"/></svg>
+            <span>联网</span>
+          </button>
           <span class="grow"></span>
           <button type="button" class="cbtn" id="model-btn" aria-haspopup="menu" aria-expanded="false">
             <span class="dot" aria-hidden="true"></span><span id="model-label">本机模型</span><svg aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4l2.5 2.5L7.5 4"/></svg>
@@ -78,6 +82,10 @@
       <div class="confirm-send" id="confirm-send" hidden></div>
       <div class="generating" id="generating" hidden>
         <span id="gen-text">回答生成中，可以先在右侧核对原文</span>
+        <button type="button" class="cbtn web-btn" id="web-btn-gen" aria-pressed="false" title="联网搜索">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="6.2"/><path d="M1.8 8h12.4M8 1.8c1.8 1.7 2.7 3.8 2.7 6.2S9.8 12.5 8 14.2C6.2 12.5 5.3 10.4 5.3 8S6.2 3.5 8 1.8z"/></svg>
+          <span>联网</span>
+        </button>
         <button type="button" class="btn" id="btn-stop">
           <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12"><rect x="2" y="2" width="8" height="8" rx="1.5" fill="currentColor"/></svg>
           停止 <span class="hint">Esc</span>

@@ -58,12 +58,15 @@
         c.confirm = { items: e.items, keep: new Set(e.items.map((x) => x.n)), excluded: e.excluded, turns: e.turns,
                       model: e.model, service: e.service };
         renderConfirm();
+      } else if (e.type === "thinking") {
+        c.thinking = (c.thinking || "") + e.text;
+        if (!updateThinking(c)) renderQA();
       } else if (e.type === "token") {
         if (c.phase !== "streaming") { c.phase = "streaming"; c.confirm = null; renderConfirm(); renderQA(); }
         c.text += e.text;
         if (c.kind === "analysis") updateBar(c);
         const el = $("answer-live");
-        if (el) el.innerHTML = answerHTML(c.text, true, "cur", c.kind === "chat");
+        if (el) el.innerHTML = answerHTML(c.text, true, "cur", c.kind === "chat" && !(c.sources && c.sources.length));
         keepBottom();
       } else if (e.type === "done") {
         S.cur = null;
@@ -106,6 +109,7 @@
       if (m === "chat" || m === "search" || m === "qa" || m === "analysis") S.mode = m;
     } catch (e) { /* 忽略 */ }
     setMode(S.mode);
+    renderWebBtn();
     renderSide(); renderStatus(); renderQA(); renderAside(); renderScope();
     $("q").focus();
   }
@@ -270,6 +274,63 @@
     return `<div class="banner" role="alert"><div><strong>本机模型没有就绪</strong>：${bad.map((m) => esc(m.ref)).join("、")}。<br>请先打开 Ollama 应用；如果缺模型，在终端运行 <code>ollama pull 模型名</code>，然后重新打开本应用。也可以在左栏“模型”里换用别的模型。</div></div>`;
   }
 
+  // ---------- 推理模型的思考过程 ----------
+  // 思考内容单独显示、默认折叠；展开后保持展开（重新渲染时按 c.thinkOpen 恢复）
+  const THINK_SHOW = 6000;
+  function thinkingHTML(c) {
+    if (!c.thinking) return "";
+    const n = c.thinking.length, body = c.thinking.slice(-THINK_SHOW);
+    const label = c.text ? `思考过程（${fmt(n)} 字）` : `${esc(c.model_name || "模型")}正在思考（已想了 ${fmt(n)} 字），想完才开始写回答`;
+    return `<details class="think" id="think-live"${c.thinkOpen ? " open" : ""}><summary><span id="think-label">${label}</span></summary>
+      <div class="think-body" id="think-body">${n > THINK_SHOW ? "…" : ""}${esc(body)}</div></details>`;
+  }
+  function updateThinking(c) {
+    const box = $("think-live");
+    if (!box) return false;
+    const n = c.thinking.length;
+    $("think-label").textContent = c.text ? `思考过程（${fmt(n)} 字）` : `${c.model_name || "模型"}正在思考（已想了 ${fmt(n)} 字），想完才开始写回答`;
+    if (box.open) {
+      const b = $("think-body");
+      b.textContent = (n > THINK_SHOW ? "…" : "") + c.thinking.slice(-THINK_SHOW);
+      b.scrollTop = b.scrollHeight;
+    }
+    return true;
+  }
+
+  // ---------- 联网搜索开关（输入框旁，任意时候都能点） ----------
+  // 输入框旁、以及回答生成中的“停止”栏里各有一个，状态同步
+  function renderWebBtn() {
+    const on = !!S.settings.web_search;
+    const why = S.mode === "search" ? "（关键词检索不联网）" : "";
+    for (const id of ["web-btn", "web-btn-gen"]) {
+      const btn = $(id);
+      if (!btn) continue;
+      btn.setAttribute("aria-pressed", String(on));
+      btn.classList.toggle("on", on);
+      btn.title = on ? `联网搜索已打开${why}：回答时同时搜索网页，网页作为出处列出。点一下关闭`
+                     : "联网搜索已关闭：只用本机资料。点一下打开";
+    }
+  }
+  async function toggleWeb() {
+    const on = !S.settings.web_search;
+    try {
+      S.settings = await api("set_setting", "web_search", on);
+    } catch (e) { toast(String(e.message || e)); return; }
+    renderWebBtn();
+    if (S.view === "settings") renderSettings();
+    const busy = !$("generating").hidden;
+    toast(on ? (busy ? "已打开联网搜索：这次回答里还没做的检索会联网" : "已打开联网搜索")
+             : (busy ? "已关闭联网搜索：这次回答里还没做的检索不再联网" : "已关闭联网搜索"));
+  }
+  function webLine(ex) {
+    const w = (ex || {}).web;
+    if (!w) return "";
+    if (w.queries && w.queries.length) return `联网搜索 ${w.queries.length} 次，用到 ${w.pages} 个网页${w.errors ? `（${w.errors.length} 次失败）` : ""}`;
+    if (w.errors && w.errors.length) return `联网搜索失败：${w.errors[0]}`;
+    if (w.skipped) return w.skipped;
+    return "";
+  }
+
   function answerHTML(text, streaming, turn, plain) {
     let h = esc(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
     h = h.replace(/^#{2,4}\s*(.+)(?:\n|$)/gm, '<span class="ah">$1</span>');
@@ -339,14 +400,16 @@
     if (at === 3 && !c.writeSince) c.writeSince = Date.now();
     const st = (i) => (i < at ? "done" : i === at ? "now" : "");
     const aspects = (info.aspects || []).length ? `拆成 ${info.aspects.length} 个方面：${info.aspects.map(esc).join("；")}` : "通常 5–15 秒";
+    const note = info.note ? `<li class="kwrow"><span class="sub warn">${esc(info.note)}</span></li>` : "";
     const kwSub = info.keywords ? (Object.keys(info.keywords).length ? "" : "模型没给出关键词，只按原问题检索") : (at === 1 ? "通常 5–10 秒" : "");
     const searchSub = p.stage === "search" && p.done < p.total && p.detail && p.detail.current ? `正在查：${esc(p.detail.current)}`
       : (at > 2 && c.sources.length ? `送入 ${c.sources.length} 段（${new Set(c.sources.map((s) => s.file)).size} 份资料），右侧可以先看` : "");
     return `${barHTML(c)}<ol class="steps" aria-label="进度">
       ${step(st(0), "把问题拆成几个要分别查的方面", at === 0 ? (c.online ? "在线模型通常几秒" : "通常 5–15 秒") : aspects)}
+      ${note}
       ${step(st(1), "把关键词写成中文、英文、法文", kwSub)}
       ${at >= 1 && info.keywords ? `<li class="kwrow">${keywordPills(info.keywords, info.lang_hits)}</li>` : ""}
-      ${step(st(2), `按方面、按语言查找全部资料${p.stage === "search" ? `（${Math.min(p.done, p.total)} / ${p.total}）` : ""}`, searchSub)}
+      ${step(st(2), `按方面、按语言${S.settings.web_search ? "查找资料并联网搜索" : "查找全部资料"}${p.stage === "search" ? `（${Math.min(p.done, p.total)} / ${p.total}）` : ""}`, searchSub)}
       ${step(st(3), "按方面写分析、综合结论并标注出处", at === 3 ? (c.online ? "" : "需要读的资料较多，通常 20–40 秒后开始出字") : "")}</ol>${SKELETON}`;
   }
 
@@ -400,7 +463,10 @@
     const ex = r.extra || {};
     let h = questionBlock(r.kind, r.question, ex.scope, ex.attachments);
     if (r.kind === "search") return h + searchHTML(r);
-    if (r.kind === "chat") return h + `<div class="answer">${answerHTML(r.answer, false, r.id, true)}</div>` + metaHTML(r);
+    if (r.kind === "chat") {
+      const web = r.context.length > 0;     // 打开联网时，对话也有出处（网页）
+      return h + (web ? foundPills(r.context) : "") + `<div class="answer">${answerHTML(r.answer, false, r.id, !web)}</div>` + metaHTML(r);
+    }
     if (r.not_found) return h + notFoundHTML(r);
     if (r.context.length) h += foundPills(r.context);
     if (r.kind === "analysis" && (ex.aspects || []).length) {
@@ -420,7 +486,9 @@
     if (ex.sent && r.kind === "chat") parts.push(ex.sent.turns ? `发送了 ${ex.sent.turns} 轮对话记录` : "");
     else if (ex.sent) parts.push(`发送了 ${ex.sent.chunks} 段资料${ex.sent.turns ? `和 ${ex.sent.turns} 轮对话` : ""}`);
     if (r.kind !== "search" && r.kind !== "chat" && !r.not_found && !r.cited.length) parts.push("没有标注出处，请在右侧核对原文");
-    return `<div class="meta">${r.kind === "search" ? "" : modelTag(r.model_name, r.online)}<span>${parts.join(" · ")}</span><span class="grow"></span>
+    const wl = webLine(ex);
+    if (wl) parts.push(wl);
+    return `<div class="meta">${r.kind === "search" ? "" : modelTag(r.model_name, r.online)}<span>${parts.filter(Boolean).join(" · ")}</span><span class="grow"></span>
       <button type="button" class="btn small" data-branch="${r.id}" title="保留到这一轮为止的内容，另开一个对话">分支</button>
       ${r.kind === "search" ? "" : `<button type="button" class="btn small" data-copy-turn="${r.id}">复制</button>`}</div>`;
   }
@@ -461,9 +529,11 @@
   function curHTML(c) {
     let h = questionBlock(c.kind, c.question, c.scope, c.attachments);
     if (c.kind === "chat" && (c.phase === "retrieving" || c.phase === "reading")) {
-      h += `<div class="thinking"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>${esc(c.model_name || "模型")}正在思考${c.online ? "" : "（本机模型通常几秒后开始出字）"}</div>`;
+      const searching = S.settings.web_search && c.phase === "retrieving" && !c.thinking;
+      if (c.sources && c.sources.length) h += foundPills(c.sources);
+      h += c.thinking ? thinkingHTML(c) : `<div class="thinking"><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span>${searching ? "正在联网搜索…" : `${esc(c.model_name || "模型")}正在思考${c.online ? "" : "（本机模型通常几秒后开始出字）"}`}</div>`;
     } else if (c.kind === "analysis" && (c.phase === "retrieving" || c.phase === "reading")) {
-      h += analysisSteps(c);
+      h += analysisSteps(c) + thinkingHTML(c);
     } else if (c.phase === "retrieving" || c.phase === "reading") {
       const reading = c.phase === "reading";
       const waited = reading ? Math.floor((Date.now() - c.readingSince) / 1000) : 0;
@@ -472,11 +542,12 @@
         ${step(reading ? "done" : "now", reading ? `已找到 ${new Set(c.sources.map((s) => s.file)).size} 份相关资料` : "正在本机查找资料", reading ? `${sec(c.retrievalMs)} · 右侧可以先看` : "")}
         <li class="${reading ? "now" : ""}"><span class="ic" aria-hidden="true"></span><span class="label">${esc(c.model_name || "模型")}正在阅读资料</span>
           ${reading ? `<span class="sub" id="waited">已等待 ${waited} 秒 · ${waitHint}</span>` : ""}</li>
-        <li><span class="ic" aria-hidden="true"></span><span class="label">生成回答并标注出处</span></li></ol>${SKELETON}`;
+        <li><span class="ic" aria-hidden="true"></span><span class="label">生成回答并标注出处</span></li></ol>${thinkingHTML(c) || SKELETON}`;
     } else if (c.phase === "streaming") {
       if (c.kind === "analysis") h += barHTML(c);
       if (c.sources && c.sources.length) h += foundPills(c.sources);
-      h += `<div class="answer" id="answer-live" aria-live="polite">${answerHTML(c.text, true, "cur", c.kind === "chat")}</div>
+      h += thinkingHTML(c);
+      h += `<div class="answer" id="answer-live" aria-live="polite">${answerHTML(c.text, true, "cur", c.kind === "chat" && !(c.sources && c.sources.length))}</div>
         <div class="meta">${modelTag(c.model_name, c.online)}</div>`;
     } else if (c.phase === "stopped") {
       h += `<div class="answer">${answerHTML(c.text || "", false, "cur")}</div><div class="meta">${modelTag(c.model_name, c.online)}<span>${c.text ? "已停止生成（这一轮没有保存）" : "已取消"}</span></div>`;
@@ -532,7 +603,15 @@
     return S.sources.some((s) => s.kind === "apple_notes" && String(p).startsWith(s.path + "/"));
   }
 
+  function webMark(s) {
+    return s.type === "web" ? '<span class="webmark" title="联网搜索到的网页">网页</span>' : "";
+  }
+
   function srcActions(path, type, page, n) {
+    if (type === "web") {
+      return `<div class="acts"><button type="button" class="btn primary" data-open-url="${esc(path)}">在浏览器中打开</button>
+        ${n != null ? `<button type="button" class="btn" data-copy-src="${n}">复制原文</button>` : ""}</div>`;
+    }
     const note = isNotePath(path);
     return `<div class="acts">
       <button type="button" class="btn primary" data-open="${esc(path)}">${note ? "在备忘录中打开" : type === "pdf" && page ? `打开（第 ${page} 页）` : "打开原文件"}</button>
@@ -547,8 +626,10 @@
     const a = $("aside");
     const r = selTurnRecord();
     if (r && r.kind === "search") return renderSearchAside(a, r);
-    if ((r && r.kind === "chat") || (S.selTurn === "cur" && S.cur && S.cur.kind === "chat")) {
-      a.innerHTML = `<h2>出处</h2><div class="aside-empty">对话模式不查资料库，回答来自模型本身的知识，没有出处。想依据你的资料回答，切换到“分析”。</div>`;
+    const chatNoSrc = (r && r.kind === "chat" && !(r.context || []).length)
+      || (S.selTurn === "cur" && S.cur && S.cur.kind === "chat" && !(S.cur.sources || []).length);
+    if (chatNoSrc) {
+      a.innerHTML = `<h2>出处</h2><div class="aside-empty">对话模式不查资料库，回答来自模型本身的知识，没有出处。想依据你的资料回答，切换到“分析”；想让回答带上网页出处，打开输入框旁的“联网”。</div>`;
       return;
     }
     const list = currentSources();
@@ -565,15 +646,15 @@
     for (const s of list) {
       if (s.n === S.sel) {
         h += `<div class="src on" aria-current="true">
-          <div class="top"><span class="num">[${s.n}]</span><span class="name">${esc(s.file)}</span></div>
+          <div class="top"><span class="num">[${s.n}]</span>${webMark(s)}<span class="name">${esc(s.file)}</span></div>
           ${s.loc ? `<div class="loc">${esc(s.loc)}</div>` : ""}
-          <div class="src-tags" id="src-tags" data-path="${esc(s.path)}"></div>
+          ${s.type === "web" ? `<div class="loc url">${esc(s.path)}</div>` : `<div class="src-tags" id="src-tags" data-path="${esc(s.path)}"></div>`}
           <div class="body">${highlight(s.text, answer, s.n)}</div>
           ${srcActions(s.path, s.type, s.page, s.n)}</div>`;
       } else {
         const snip = s.text.replace(/\s+/g, " ").slice(0, 90);
         h += `<button type="button" class="src" data-sel="${s.n}">
-          <div class="top"><span class="num">[${s.n}]</span><span class="name">${esc(s.file)}</span></div>
+          <div class="top"><span class="num">[${s.n}]</span>${webMark(s)}<span class="name">${esc(s.file)}</span></div>
           ${s.loc ? `<div class="loc">${esc(s.loc)}</div>` : ""}
           <div class="snip">${esc(snip)}</div></button>`;
       }
@@ -853,7 +934,7 @@
     $("mode-label").textContent = (MODES.find((m) => m[0] === mode) || MODES[0])[1];
     $("q").placeholder = PLACEHOLDER[mode] || PLACEHOLDER.qa;
     if (mode === "chat") S.scopeOpen = false;
-    closeMenu(); renderModelSelect(); renderComposerTop(); renderScope();
+    closeMenu(); renderModelSelect(); renderComposerTop(); renderScope(); renderWebBtn();
     $("q").focus();
   }
 
@@ -1166,6 +1247,26 @@
           每份文件大约 3–8 秒，资料多时需要较长时间，问答时自动让路。</div></div>
         <button type="button" class="switch" role="switch" aria-checked="${!!S.settings.auto_tags}" aria-labelledby="tags-label" id="tags-switch"></button>
       </section>
+      <section class="setting web-setting">
+        <div class="txt"><div class="h" id="web-label">联网搜索</div>
+          <div class="d">打开后，对话、分析、深度分析都会同时搜索网页，用到的网页列在出处里（可以在浏览器中打开）。
+          也可以随时点输入框旁的“联网”按钮开关，回答进行中切换，对还没做的检索马上生效。只发送你的问题和关键词给搜索服务，不发送资料库内容；离线模式下不联网。</div>
+          <div class="web-form">
+            <label for="web-provider">搜索服务</label>
+            <select id="web-provider">
+              <option value="bing"${S.settings.web_provider === "bing" || !S.settings.web_provider ? " selected" : ""}>必应 Bing（不需要密钥，国内可用）</option>
+              <option value="duckduckgo"${S.settings.web_provider === "duckduckgo" ? " selected" : ""}>DuckDuckGo（不需要密钥，需能访问境外网站）</option>
+              <option value="tavily"${S.settings.web_provider === "tavily" ? " selected" : ""}>Tavily（需要密钥，结果更干净）</option>
+            </select>
+            <span class="web-key"${S.settings.web_provider === "tavily" ? "" : " hidden"}>
+              <label for="web-key">Tavily 密钥</label>
+              <input id="web-key" type="password" autocomplete="off" placeholder="tvly-…" value="${esc(S.settings.web_key || "")}">
+            </span>
+            <button type="button" class="btn small" id="web-test">测试</button>
+            <span class="web-test-msg" id="web-test-msg" role="status"></span>
+          </div></div>
+        <button type="button" class="switch" role="switch" aria-checked="${!!S.settings.web_search}" aria-labelledby="web-label" id="web-switch"></button>
+      </section>
       <section class="setting" id="daemon-setting" hidden></section>
       <section class="setting"><div class="txt"><div class="h">运行信息</div>
         <div class="kv" style="margin-top:8px">${models}
@@ -1178,6 +1279,24 @@
       toast(S.settings.dev_mode ? "开发者模式已打开，左栏可以看日志" : "开发者模式已关闭");
     });
     $("settings-open-logs").addEventListener("click", openLogsFolder);
+    $("web-switch").addEventListener("click", toggleWeb);
+    $("web-provider").addEventListener("change", async (e) => {
+      S.settings = await api("set_setting", "web_provider", e.target.value);
+      renderSettings();
+    });
+    $("web-key").addEventListener("change", async (e) => {
+      S.settings = await api("set_setting", "web_key", e.target.value.trim());
+      toast("已保存 Tavily 密钥");
+    });
+    $("web-test").addEventListener("click", async () => {
+      const msg = $("web-test-msg");
+      msg.textContent = "正在测试…";
+      const k = $("web-key");
+      if (k && k.value.trim() !== (S.settings.web_key || "")) S.settings = await api("set_setting", "web_key", k.value.trim());
+      const r = await api("test_web_search");
+      msg.textContent = r.message || (r.ok ? "可用" : "不可用");
+      msg.classList.toggle("bad", !r.ok);
+    });
     $("tags-switch").addEventListener("click", async () => {
       S.settings = await api("set_setting", "auto_tags", !S.settings.auto_tags);
       renderSettings();
@@ -1628,6 +1747,7 @@
     if (d.sel) return select(d.sel);
     if (d.thread) return openThread(d.thread);
     if (d.lib) return showView("lib");
+    if (d.openUrl != null) { const r = await api("open_url", d.openUrl); if (r.error) toast(r.error); return; }
     if (d.open != null) { const r = await api("open_file", d.open); if (r.error) toast(r.error); return; }
     if (d.reveal != null) { const r = await api("reveal", d.reveal); if (r.error) toast(r.error); return; }
     if (d.branch) return branchFrom(d.branch);
@@ -1757,6 +1877,14 @@
   });
   $("plus-btn").addEventListener("click", () => openMenu("plus"));
   $("mode-btn").addEventListener("click", () => openMenu("mode"));
+  $("web-btn").addEventListener("click", toggleWeb);
+  $("web-btn-gen").addEventListener("click", toggleWeb);
+  document.addEventListener("toggle", (e) => {
+    if (e.target && e.target.id === "think-live" && S.cur) {
+      S.cur.thinkOpen = e.target.open;
+      if (e.target.open) updateThinking(S.cur);
+    }
+  }, true);
   $("model-btn").addEventListener("click", () => openMenu("model"));
   $("btn-models").addEventListener("click", () => showView("models"));
   $("btn-settings").addEventListener("click", () => showView("settings"));

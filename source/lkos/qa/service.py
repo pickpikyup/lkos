@@ -5,13 +5,16 @@ from __future__ import annotations
 import re
 
 from lkos.config import Config
+from lkos.errors import ModelUnavailableError
 from lkos.gateway.base import TokenCallback
+from lkos.gateway.gateway import out_of_budget_message
 from lkos.indexing.language import detect_lang
 from lkos.qa.citations import validate_citations
 from lkos.qa.history import Turn, history_messages, messages_tokens, prior_chunks
-from lkos.qa.prompt import NO_CONTEXT_MESSAGE, build_messages, fit_context, lang_key
+from lkos.qa.prompt import LABELS, NO_CONTEXT_MESSAGE, build_messages, fit_context, format_source, lang_key
 from lkos.retrieval.select import merge_adjacent
 from lkos.types import Answer, RetrievedChunk
+from lkos.web.search import interleave
 
 TASK = "knowledge_qa"
 _LATIN_WORD = re.compile(r"[A-Za-zÀ-ÿ]{2,}")
@@ -33,33 +36,61 @@ CHAT_SYSTEM = {
     "fr": "Tu es un assistant serviable. Sois précis, concis et structuré ; dis-le si tu n'es pas sûr. Réponds en français.",
 }
 ONLINE_TOP_K = 12   # 在线模型一次检索的片段数（本机模型按 retrieval.top_k）
+# 联网搜索：(结果数, 取正文的网页数, 每个网页最多多少字)；本机模型上下文小，少取一些
+WEB_LOCAL = (3, 2, 600)
+WEB_ONLINE = (6, 4, 2000)
+# 对话模式打开联网时追加的说明
+CHAT_WEB_NOTE = {
+    "zh": "\n下面附有联网搜索到的网页（编号资料）。回答时优先依据这些网页，引用处用 [编号] 标注；"
+          "网页没有涉及、靠你自己知识补充的部分要说明；网页说法不一致时都列出。",
+    "en": "\nNumbered web pages from a live web search are attached. Prefer them, cite as [n], say which parts come "
+          "from your own knowledge, and list conflicting claims.",
+    "fr": "\nDes pages web numérotées issues d'une recherche sont jointes. Appuie-toi d'abord sur elles, cite-les "
+          "avec [n], indique ce qui vient de tes propres connaissances et signale les contradictions.",
+}
+
+
+def web_query(question: str, turns) -> str:
+    """联网搜索用的查询：一般就是问题本身；“那第二点呢”这类很短的追问带上上一轮的问题。"""
+    q = question.strip()
+    if turns and len(q) < 12:
+        q = f"{turns[-1].question} {q}"
+    return q[:200]
 
 
 class QAService:
-    def __init__(self, cfg: Config, retriever, gateway, marker=None):
+    def __init__(self, cfg: Config, retriever, gateway, marker=None, web=None):
         self.cfg = cfg
         self.retriever = retriever
         self.gateway = gateway
         self.marker = marker  # 问答活动标记：检索 + 生成期间让后台索引暂停
+        self.web = web        # 联网搜索（WebSearcher），开关在界面上，随时可改
+
+    def _web_chunks(self, question: str, turns, online: bool) -> list:
+        if self.web is None or not self.web.enabled():
+            return []
+        k, fetch, chars = WEB_ONLINE if online else WEB_LOCAL
+        return self.web.chunks(web_query(question, turns), k=k, fetch=fetch, max_chars=chars)
 
     def ask(self, question: str, k: int | None = None, model_override: str | None = None,
             lang: str | None = "auto", on_token: TokenCallback | None = None,
             mode: str | None = None, strategy: str | None = None, on_context=None, scope=None,
-            history=None, pinned=None, confirm=None) -> Answer:
+            history=None, pinned=None, confirm=None, on_thinking=None) -> Answer:
         """on_context(片段列表)：片段选好、开始生成之前调用，界面据此先显示找到的资料。
         history：同一对话之前的轮次（list[Turn]，旧写法 [(问, 答)] 也可以）；
         pinned：用户附加的整份文件的片段（只给在线模型，排在最前）；
         confirm(片段列表) → 片段列表：发给在线模型前让用户确认（可以去掉一些），返回空列表或抛 Cancelled 表示不发。"""
         if self.marker is None:
             return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context, scope, history,
-                             pinned, confirm)
+                             pinned, confirm, on_thinking)
         with self.marker.active():
             return self._ask(question, k, model_override, lang, on_token, mode, strategy, on_context, scope, history,
-                             pinned, confirm)
+                             pinned, confirm, on_thinking)
 
     def chat(self, question: str, model_override: str | None = None, history=None,
-             on_token: TokenCallback | None = None) -> Answer:
-        """纯对话：不查资料库，不用向量和关键词检索，直接和模型对话（带上同一对话之前的轮次）。"""
+             on_token: TokenCallback | None = None, on_thinking=None, on_context=None, confirm=None) -> Answer:
+        """纯对话：不查资料库，不用向量和关键词检索，直接和模型对话（带上同一对话之前的轮次）。
+        打开联网搜索时，先搜网页、作为编号资料附上（模型引用时标 [编号]）。"""
         question = question.strip()
         ref = self.gateway.resolve(TASK, model_override)
         online = self.is_online(ref)
@@ -68,24 +99,42 @@ class QAService:
         max_out = (mcfg.max_output or CHAT_MAX_TOKENS) if online else CHAT_MAX_TOKENS
         hist = history_messages(turns, online, mcfg.context_window - max_out, chat=True)
         lang = answer_lang(question, self.cfg)
-        messages = [{"role": "system", "content": CHAT_SYSTEM.get(lang, CHAT_SYSTEM["en"])}, *hist,
-                    {"role": "user", "content": question}]
+        system = CHAT_SYSTEM.get(lang, CHAT_SYSTEM["en"])
+        context = self._web_chunks(question, turns, online)
+        if context:
+            context = fit_context(question, context, lang, mcfg.context_window - messages_tokens(hist), max_out)
+            if on_context is not None:
+                on_context(context)
+            if online and confirm is not None:
+                context = confirm(context)
+        user = question
+        if context:
+            system += CHAT_WEB_NOTE.get(lang, CHAT_WEB_NOTE["en"])
+            src_label, q_label = LABELS[lang_key(lang)]
+            sources = "\n\n".join(format_source(i, c) for i, c in enumerate(context, start=1))
+            user = f"{src_label}\n{sources}\n\n{q_label}{question}"
+        messages = [{"role": "system", "content": system}, *hist, {"role": "user", "content": user}]
+        kw = dict(model_override=model_override, on_token=on_token, max_tokens=max_out, log_as="chat",
+                  on_thinking=on_thinking)
         if self.marker is None:
-            result, _ = self.gateway.chat(TASK, messages, model_override=model_override, on_token=on_token,
-                                          max_tokens=max_out, log_as="chat")
+            result, _ = self.gateway.chat(TASK, messages, **kw)
         else:
             with self.marker.active():
-                result, _ = self.gateway.chat(TASK, messages, model_override=model_override, on_token=on_token,
-                                              max_tokens=max_out, log_as="chat")
-        return Answer(text=result.text.strip(), no_context=False, context=[], ttft_ms=result.ttft_ms,
-                      latency_ms=result.latency_ms, input_tokens=result.input_tokens, output_tokens=result.output_tokens)
+                result, _ = self.gateway.chat(TASK, messages, **kw)
+        if result.out_of_budget:
+            raise ModelUnavailableError(out_of_budget_message(result, max_out))
+        text, citations, invalid = (validate_citations(result.text, context) if context
+                                    else (result.text.strip(), [], []))
+        return Answer(text=text.strip(), citations=citations, invalid_refs=invalid, no_context=False, context=context,
+                      ttft_ms=result.ttft_ms, latency_ms=result.latency_ms, input_tokens=result.input_tokens,
+                      output_tokens=result.output_tokens)
 
     def is_online(self, ref: str) -> bool:
         pc = self.cfg.providers.get(ref.split("/", 1)[0])
         return bool(pc and pc.is_remote)
 
     def _ask(self, question, k, model_override, lang, on_token, mode, strategy, on_context=None, scope=None,
-             history=None, pinned=None, confirm=None) -> Answer:
+             history=None, pinned=None, confirm=None, on_thinking=None) -> Answer:
         question = question.strip()
         qlang = answer_lang(question, self.cfg)
         turns = [t if isinstance(t, Turn) else Turn(question=t[0], answer=t[1]) for t in (history or [])]
@@ -104,7 +153,9 @@ class QAService:
         query = question if not turns else f"{turns[-1].question}\n{question}"
         hits = self.retriever.search(query, k=k or (ONLINE_TOP_K if online else None), lang=lang, mode=mode, **extra)
         hist = history_messages(turns, online, num_ctx)
-        pool = list(pinned or []) + [h for h in hits if h.chunk_id not in {p.chunk_id for p in pinned or []}]
+        web = self._web_chunks(question, turns, online)
+        local = [h for h in hits if h.chunk_id not in {p.chunk_id for p in pinned or []}]
+        pool = list(pinned or []) + (interleave(local, web) if web else local)
         if online:   # 在线模型上下文大：之前各轮找到的资料也一起带上
             pool += prior_chunks(turns, {c.chunk_id for c in pool})
         if not pool:
@@ -122,7 +173,10 @@ class QAService:
             if not context and not turns:
                 return Answer(text=NO_CONTEXT_MESSAGE[lang_key(qlang)], no_context=True)
         messages = build_messages(question, context, qlang, history=hist)
-        result, _ = self.gateway.chat(TASK, messages, model_override=model_override, on_token=on_token)
+        result, _ = self.gateway.chat(TASK, messages, model_override=model_override, on_token=on_token,
+                                      on_thinking=on_thinking)
+        if result.out_of_budget:
+            raise ModelUnavailableError(out_of_budget_message(result, max_out))
         text, citations, invalid = validate_citations(result.text, context)
         return Answer(
             text=text, citations=citations, invalid_refs=invalid, no_context=False, context=context,
@@ -140,6 +194,8 @@ def expand_best(question: str, context: list[RetrievedChunk], lang: str, num_ctx
     order = sorted(range(len(context)), key=lambda i: -context[i].score)
     best_i = order[0]
     best = context[best_i]
+    if best.file_type == "web":          # 网页没有“相邻块”
+        return context
     if len(order) > 1 and best.score < ratio * context[order[1]].score:
         return context
     extra = [n for n in neighbors(best) if n.chunk_id not in {c.chunk_id for c in context}]

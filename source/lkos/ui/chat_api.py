@@ -60,15 +60,19 @@ class ChatMixin:
             if mode == "chat":
                 log.info("对话：%s（模型 %s%s）", question, choice["name"],
                          f"，接着对话 #{thread_id} 第 {len(turns) + 1} 轮" if turns else "")
-                if online:
-                    log.info("发送到在线模型 %s（%s）：问题和 %d 轮对话（对话模式不发送资料）", choice["name"],
-                             choice["service"], len(turns))
-                ans = self._app.qa.chat(question, model_override=ref, history=turns, on_token=cb["on_token"])
+                sent: dict = {}
+                confirm = self._online_gate(qid, choice, turns, sent) if online else None
+                ans = self._app.qa.chat(question, model_override=ref, history=turns, on_token=cb["on_token"],
+                                        on_thinking=cb["on_thinking"], on_context=cb["on_context"], confirm=confirm)
                 ans.latency_ms = int((time.perf_counter() - t0) * 1000)
-                extra = {"mode": "chat"}
+                if online and not sent:
+                    log.info("发送到在线模型 %s（%s）：问题和 %d 轮对话（对话模式不发送资料库内容）", choice["name"],
+                             choice["service"], len(turns))
+                    sent = {"service": choice["service"], "model": choice["name"], "chunks": 0, "files": [],
+                            "excluded": 0, "turns": len(turns)}
+                extra = {"mode": "chat", **self._web_extra()}
                 if online:
-                    extra["sent"] = {"service": choice["service"], "model": choice["name"], "chunks": 0, "files": [],
-                                     "excluded": 0, "turns": len(turns)}
+                    extra["sent"] = sent
                 return self._save(question, ans, kind="chat", extra=extra, thread_id=thread_id, model=ref)
             sc = Scope.from_dict(scope)
             pinned = []
@@ -83,7 +87,7 @@ class ChatMixin:
                      f"，接着对话 #{thread_id} 第 {len(turns) + 1} 轮" if turns else "",
                      f"，附加 {len(attachments)} 个文件" if attachments else "")
             common = dict(model_override=ref, on_token=cb["on_token"], on_context=cb["on_context"], scope=sc,
-                          history=turns, pinned=pinned, confirm=confirm)
+                          history=turns, pinned=pinned, confirm=confirm, on_thinking=cb["on_thinking"])
             extra = {"mode": mode, "scope": scope or {}, "attachments": attachments}
             if mode == "qa":
                 ans = self._app.qa.ask(question, **common)
@@ -94,6 +98,7 @@ class ChatMixin:
                 extra.update(aspects=aspects, query=question, **info)
                 kind = "analysis"
             ans.latency_ms = int((time.perf_counter() - t0) * 1000)
+            extra.update(self._web_extra())
             if online:
                 extra["sent"] = sent
             record = self._save(label, ans, kind=kind, extra=extra, thread_id=thread_id, model=ref)
@@ -101,6 +106,14 @@ class ChatMixin:
                      ans.latency_ms, ans.input_tokens, ans.output_tokens, record["cited"] or "无")
             return record
         return self._start({"chat": "c", "qa": "q"}.get(mode, "a"), work)
+
+    def _web_extra(self) -> dict:
+        """这一轮的联网情况（查了什么、找到几个网页、出错原因），存进问答记录。"""
+        web = getattr(self._app, "web", None)
+        if web is None:
+            return {}
+        d = web.run.to_dict()
+        return {"web": d} if d.get("queries") or d.get("errors") or self._settings.get("web_search") else {}
 
     def _keyword(self, query: str, thread_id, scope) -> dict:
         def run():

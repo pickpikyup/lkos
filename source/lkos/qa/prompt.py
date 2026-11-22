@@ -41,6 +41,21 @@ SYSTEM_PROMPTS = {
     ),
 }
 
+# 资料里有联网搜索到的网页时追加到系统提示
+WEB_NOTE = {
+    "zh": "\n资料中标“网页”的来自联网搜索：同样用 [编号] 标注；网页之间说法不一致时都列出并说明来源，"
+          "网页没写日期或来源不明的信息要注明“未核实”。",
+    "en": "\nSources marked \"网页\" are web pages from a live web search: cite them as [n] too; when pages disagree, "
+          "give both and say which says what; flag undated or unclear claims as unverified.",
+    "fr": "\nLes sources marquées « 网页 » viennent d'une recherche web : citez-les aussi avec [n] ; si elles se "
+          "contredisent, donnez les deux versions ; signalez les informations non datées comme non vérifiées.",
+}
+
+
+def with_web_note(system: str, context: Sequence[RetrievedChunk], lang: str) -> str:
+    return system + WEB_NOTE[lang_key(lang)] if any(c.file_type == "web" for c in context) else system
+
+
 LABELS = {
     "zh": ("资料：", "问题："),
     "en": ("Sources:", "Question:"),
@@ -67,6 +82,8 @@ def estimate_tokens(text: str) -> int:
 
 
 def format_source(n: int, chunk: RetrievedChunk) -> str:
+    if chunk.file_type == "web":          # 联网搜索到的网页：带上网址，模型可以据此说明来源
+        return f"[{n}] ({chunk.describe()})\n网址：{chunk.file_path}\n{chunk.text}"
     return f"[{n}] ({chunk.describe()})\n{chunk.text}"
 
 
@@ -107,7 +124,7 @@ def build_messages(question: str, context: Sequence[RetrievedChunk], lang: str, 
     src_label, q_label = LABELS[key]
     sources = "\n\n".join(format_source(i, c) for i, c in enumerate(context, start=1))
     return [
-        {"role": "system", "content": SYSTEM_PROMPTS[key]},
+        {"role": "system", "content": with_web_note(SYSTEM_PROMPTS[key], context, key)},
         *(history if history and isinstance(history[0], dict) else history_turns(history)),
         {"role": "user", "content": f"{src_label}\n{sources}\n\n{q_label}{question}"},
     ]

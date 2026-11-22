@@ -17,6 +17,7 @@ from lkos.qa.extract import Extractor
 from lkos.qa.analysis import Analyzer
 from lkos.qa.tags import Tagger
 from lkos.retrieval.retriever import Retriever
+from lkos.web.search import WebSearcher
 from lkos.storage.db import connect, init_schema
 from lkos.storage.repository import Repository
 
@@ -38,6 +39,7 @@ class App:
     extractor: Extractor = None
     analyzer: Analyzer = None
     tagger: Tagger = None
+    web: WebSearcher = None
 
     @classmethod
     def open(cls, home: Path | None = None, config_path: Path | None = None,
@@ -60,13 +62,15 @@ class App:
         retriever = Retriever(cfg, repo, gateway, marker=marker)
         indexer = Indexer(cfg, repo, gateway)
         indexer.home = home
+        # 联网搜索：开关和搜索服务由界面设置（Bridge 换上读设置的函数）；命令行默认关闭
+        web = WebSearcher(offline=lambda: cfg.privacy.offline_mode)
         return cls(
             home=home, cfg=cfg, repo=repo, gateway=gateway,
-            indexer=indexer, retriever=retriever,
-            qa=QAService(cfg, retriever, gateway, marker=marker), marker=marker,
+            indexer=indexer, retriever=retriever, web=web,
+            qa=QAService(cfg, retriever, gateway, marker=marker, web=web), marker=marker,
             summarizer=Summarizer(cfg, repo, gateway, marker=marker),
             extractor=Extractor(cfg, repo, retriever, gateway, marker=marker),
-            analyzer=Analyzer(cfg, retriever, gateway, marker=marker),
+            analyzer=Analyzer(cfg, retriever, gateway, marker=marker, web=web),
             tagger=Tagger(cfg, repo, gateway),   # 后台任务，不占用“正在问答”标记
         )
 
