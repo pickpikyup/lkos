@@ -81,7 +81,7 @@ a { color: var(--accent); }
   border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg); font-weight: 600;
 }
 .btn-new .kbd { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--muted); }
-.side-scroll { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 16px; }
+.side-scroll { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 16px; margin-top: -8px; }
 .side-group { display: flex; flex-direction: column; gap: 2px; }
 .side-label { display: flex; align-items: center; font-size: 12px; color: var(--muted); padding: 0 8px 4px; }
 .side-label button { margin-left: auto; width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-2); display: flex; align-items: center; justify-content: center; }
@@ -595,3 +595,30 @@ details.think .think-body { max-height: 260px; overflow: auto; padding: 0 12px 1
 .mrow .mn { white-space: nowrap; }
 .mcard.mfile .mfoot { flex-wrap: wrap; }
 .mcard.mfile #models-file-msg { flex-basis: 100%; }
+
+/* 左栏：资料库固定在上面（可折叠、文件夹多时自己滚动），对话历史单独滚动 */
+.side-lib { flex: none; display: flex; flex-direction: column; min-height: 0; }
+.side-lib .fold { margin: 0; width: auto; height: 24px; padding: 0 4px 0 0; gap: 4px; font-size: 12px; color: var(--muted); justify-content: flex-start; }
+.side-lib .fold .chev { transition: transform .15s; }
+.side-lib.folded .fold .chev { transform: rotate(-90deg); }
+.side-lib.folded .side-folders { display: none; }
+.side-folders { display: flex; flex-direction: column; gap: 2px; max-height: min(260px, 30vh); overflow-y: auto; }
+.side-item.two { align-items: center; }
+.side-item .tt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.side-item .tt .p { font-size: 11px; color: var(--muted); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-hist-head { flex: none; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 12px; }
+.side-hist-head .side-label { padding-bottom: 0; }
+.hist-q { height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font: inherit; font-size: 13px; }
+.side-row { position: relative; display: flex; align-items: center; border-radius: 6px; }
+.side-row .side-item { padding-right: 32px; }
+.side-del { position: absolute; right: 4px; width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: var(--muted);
+  display: none; align-items: center; justify-content: center; }
+.side-row:hover .side-del, .side-row:focus-within .side-del { display: flex; }
+.side-del:hover { background: var(--line); color: #b3261e; }
+.side-del-confirm { padding: 8px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg); font-size: 12.5px; }
+.side-del-confirm .q { font-weight: 600; color: var(--ink); word-break: break-all; }
+.side-del-confirm .d { margin-top: 2px; color: var(--muted); }
+.side-del-confirm .acts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.side-more { margin: 4px 0; height: 32px; border: 1px dashed var(--line-strong); border-radius: 6px; background: transparent; color: var(--ink-2); font-size: 12.5px; }
+.side-more:hover { background: var(--selected); }
+.side-folders > * { flex: none; }

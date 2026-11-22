@@ -280,9 +280,26 @@ def run_daemon(home: Path | None = None, config_path: Path | None = None, check_
             signal.signal(sig, lambda *_: stop.set())
     log.info("后台服务启动（进程 %d），每 %d 秒检查一次", os.getpid(), int(check_seconds))
     write_status(home, state="idle", folder=None)
+    from lkos.logs import PRUNE_EVERY_SECONDS, calls_cutoff, log_days, prune_log_files
+
+    def prune_logs() -> None:
+        """和应用一样：删掉保留期限（设置里的 log_days，默认 7 天）之前的日志。"""
+        days = log_days(home)
+        try:
+            n, c = prune_log_files(home, days), app.repo.prune_calls(calls_cutoff(days))
+            if n or c:
+                log.info("已删除 %d 天前的日志：运行日志 %d 行、模型调用记录 %d 条", days, n, c)
+        except Exception as e:  # noqa: BLE001
+            log.warning("清理旧日志失败：%s", e)
+
+    prune_logs()
+    last_prune = time.monotonic()
     tried_ollama = False
     try:
         while not stop.is_set():
+            if time.monotonic() - last_prune > PRUNE_EVERY_SECONDS:
+                prune_logs()
+                last_prune = time.monotonic()
             if applock.is_locked_elsewhere():
                 write_status(home, state="app-open", folder=None)
             else:

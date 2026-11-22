@@ -46,7 +46,8 @@ LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40}
 SETTINGS_FILE = "ui-settings.json"
 DEFAULT_SETTINGS = {"dev_mode": False, "auto_tags": True, "confirm_online": True,
                     # 联网搜索：输入框旁的按钮随时开关；搜索服务和 Tavily 密钥在“设置”里
-                    "web_search": False, "web_provider": "bing", "web_key": ""}
+                    "web_search": False, "web_provider": "bing", "web_key": "",
+                    "log_days": 7}          # 日志保留天数：更早的运行日志、启动日志、模型调用记录自动删除
 
 AUTO_CHECK_SECONDS = 600       # 每 10 分钟看一次有没有到期的文件夹
 
@@ -361,11 +362,15 @@ class Bridge(ChatMixin, ModelsMixin):
             log.error("模型配置文件有错误，在线模型暂时不可用：%s", models_err)
         self._cancel = threading.Event()
         self._busy = threading.Event()
+        self._active_thread = None   # 正在生成回答的对话（不能删除）
         # 应用打开期间持有 app.lock：后台服务看到后不再索引，由应用接手
         self._applock = app_lock(self._app.home)
         self._applock.acquire()
         self._indexer = IndexWorker(lambda: App.open(**kw), self._emit, auto_refresh=auto_refresh,
                                     home=self._app.home, auto_tags=lambda: bool(self._settings.get("auto_tags")))
+        self._prune_stop = threading.Event()
+        self._prune_logs()
+        threading.Thread(target=self._prune_loop, name="lkos-log-prune", daemon=True).start()
         self._sent: list[dict] = []   # 窗口还没准备好时（以及测试中）记下推送的事件
         self._pending: dict = {}      # 等待用户确认的在线发送（qid → {event, keep}）
 
@@ -406,7 +411,40 @@ class Bridge(ChatMixin, ModelsMixin):
         self._indexer = IndexWorker(lambda: App.open(**self._kw), self._emit, auto_refresh=self._auto_refresh,
                                     home=self._app.home, auto_tags=lambda: bool(self._settings.get("auto_tags")))
 
+    def _prune_logs(self) -> None:
+        """删掉保留期限之前的日志（运行日志、启动日志、模型调用记录）。"""
+        from lkos.logs import calls_cutoff, prune_log_files
+
+        days = int(self._settings.get("log_days") or 7)
+        try:
+            lines = prune_log_files(self._app.home, days)
+            calls = self._call(lambda: self._app.repo.prune_calls(calls_cutoff(days)))
+        except Exception as e:  # noqa: BLE001 - 清理日志失败不影响使用
+            log.warning("清理旧日志失败：%s", e)
+            return
+        if lines or calls:
+            log.info("已删除 %d 天前的日志：运行日志 %d 行、模型调用记录 %d 条", days, lines, calls)
+
+    def _prune_loop(self) -> None:
+        from lkos.logs import PRUNE_EVERY_SECONDS
+
+        while not self._prune_stop.wait(PRUNE_EVERY_SECONDS):
+            self._prune_logs()
+
+    def clear_logs(self) -> dict:
+        """日志页“删除全部日志”：运行日志、启动日志、模型调用记录都删除（问答记录不受影响）。"""
+        from lkos.logs import clear_log_files
+
+        try:
+            clear_log_files(self._app.home)
+            calls = self._call(self._app.repo.clear_calls)
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"删除日志失败：{e}"}
+        log.info("已删除全部日志（模型调用记录 %d 条）", calls)
+        return {"ok": True, "calls": calls}
+
     def _close(self) -> None:
+        self._prune_stop.set()
         log.info("应用退出")
         self._applock.release()
         self._indexer.shutdown()
@@ -496,6 +534,7 @@ class Bridge(ChatMixin, ModelsMixin):
             self._emit({"type": "error", "qid": qid, "message": f"出错了：{e}"})
         finally:
             self._busy.clear()
+            self._active_thread = None
 
     def ask(self, question: str, scope: dict | None = None, follow_up: int | None = None) -> dict:
         """scope：{"source_ids", "file_types", "since", "path", "tags"}；follow_up：上一轮问答记录的 id（追问）。"""
@@ -652,7 +691,11 @@ class Bridge(ChatMixin, ModelsMixin):
 
     # ---------- 历史 ----------
     def history(self) -> list[dict]:
-        return self._call(self._app.repo.list_history)
+        return self._call(lambda: self._app.repo.list_history(limit=500))
+
+    def search_history(self, query: str) -> list[dict]:
+        """左栏“搜索对话”：按问题和回答里的文字找对话（空格分开的词都要出现）。"""
+        return self._call(lambda: self._app.repo.list_history(limit=200, query=str(query or "")))
 
     def open_history(self, history_id: int) -> dict | None:
         return self._call(lambda: self._record(self._app.repo.get_history(int(history_id))))
@@ -1015,7 +1058,12 @@ class Bridge(ChatMixin, ModelsMixin):
     def set_setting(self, key: str, value) -> dict:
         if key not in DEFAULT_SETTINGS:
             return {"error": f"没有这个设置：{key}"}
-        self._settings[key] = type(DEFAULT_SETTINGS[key])(value)
+        try:
+            self._settings[key] = type(DEFAULT_SETTINGS[key])(value)
+        except (TypeError, ValueError):
+            return {"error": f"设置值不对：{value!r}"}
+        if key == "log_days":
+            self._settings["log_days"] = max(1, min(365, self._settings["log_days"]))
         try:
             self._settings_path().write_text(json.dumps(self._settings, ensure_ascii=False, indent=2), "utf-8")
         except OSError as e:
@@ -1025,6 +1073,9 @@ class Bridge(ChatMixin, ModelsMixin):
                 self._indexer.enqueue(src["path"], background=True, kind="tags")
         if key == "dev_mode":
             set_level(bool(value))
+        if key == "log_days":
+            log.info("日志保留天数改为 %d 天", self._settings["log_days"])
+            self._prune_logs()
         if key == "web_search":
             log.info("联网搜索：%s%s", "打开" if value else "关闭",
                      "（正在进行的回答里还没做的检索也按新设置）" if self._busy.is_set() else "")

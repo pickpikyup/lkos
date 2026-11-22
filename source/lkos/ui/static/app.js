@@ -106,6 +106,7 @@
     applyDevMode();
     try {
       S.modelRef = localStorage.getItem("lkos.model") || "";
+      S.libFolded = !!localStorage.getItem("lkos.libFolded");
       const m = localStorage.getItem("lkos.mode");
       if (m === "chat" || m === "search" || m === "qa" || m === "analysis") S.mode = m;
     } catch (e) { /* 忽略 */ }
@@ -141,29 +142,99 @@
     return diff <= 0 ? "今天" : diff === 1 ? "昨天" : diff < 7 ? "近 7 天" : "更早";
   }
 
+  // ---------- 左栏 ----------
+  const HIST_PAGE = 20;            // 默认只列最近 20 个对话，“显示更早的”每次多 30 个
+  const BRANCH_SVG = '<svg class="br" aria-label="分支" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="12.5" r="1.5"/><circle cx="12" cy="6" r="1.5"/><path d="M4 5v6M12 7.5c0 2.5-8 1.5-8 3.5"/></svg>';
+  const DEL_SVG = '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.6 8.5h4.8l.6-8.5"/></svg>';
+
+  function shortPath(p) {
+    // /Users/xx/Project/a/b/c → ~/Project/…/b/c
+    let s = String(p || "").replace(/^\/Users\/[^/]+/, "~");
+    const parts = s.split("/");
+    if (parts.length > 4) s = [parts[0], parts[1], "…", ...parts.slice(-2)].join("/");
+    return s;
+  }
+
+  function histTitle(h) { return h.question.replace(/^(分析|提取)：/, ""); }
+
+  function histRowHTML(h, curTid) {
+    const title = histTitle(h);
+    if (S.delConfirm === h.thread_id) {
+      return `<div class="side-del-confirm" role="group" aria-label="确认删除">
+        <div class="q">删除“${esc(title.slice(0, 24))}${title.length > 24 ? "…" : ""}”？</div>
+        <div class="d">共 ${h.turns} 轮，删除后不能恢复${h.branch_of ? "" : "；从它分出去的分支对话不受影响"}</div>
+        <div class="acts"><button type="button" class="btn small" data-del-no="1">取消</button>
+          <button type="button" class="btn small danger" data-del-yes="${h.thread_id}">删除</button></div></div>`;
+    }
+    return `<div class="side-row${h.thread_id === curTid && S.view === "qa" ? " active" : ""}">
+      <button type="button" class="side-item${h.thread_id === curTid && S.view === "qa" ? " active" : ""}" data-thread="${h.thread_id}" title="${esc(title)}${h.branch_from ? `（分支自：${esc(h.branch_from)}）` : ""}">
+        ${h.branch_of ? BRANCH_SVG : ""}<span class="t">${esc(title)}</span>${h.turns > 1 ? `<span class="n">${h.turns}</span>` : ""}</button>
+      <button type="button" class="side-del" data-del-thread="${h.thread_id}" aria-label="删除对话：${esc(title)}" title="删除这个对话">${DEL_SVG}</button></div>`;
+  }
+
   function renderSide() {
     const curTid = S.thread && S.thread.id;
+    const searching = !!(S.histQuery || "").trim();
+    const list = searching ? (S.histResults || []) : S.history;
     let html = "", last = null;
-    if (!S.history.length) html = '<div class="side-label">对话</div><div class="side-empty">提过的问题会出现在这里</div>';
-    for (const h of S.history.slice(0, 80)) {
+    if (searching && !list.length) html = `<div class="side-empty">没有找到包含“${esc(S.histQuery.trim())}”的对话</div>`;
+    else if (!list.length) html = '<div class="side-empty">提过的问题会出现在这里</div>';
+    if (searching && list.length) html += `<div class="side-empty">找到 ${list.length} 个对话</div>`;
+    const limit = searching ? list.length : (S.histLimit || HIST_PAGE);
+    for (const h of list.slice(0, limit)) {
       const g = dayLabel(h.asked_at);
       if (g !== last) { html += `<div class="side-label">${g}</div>`; last = g; }
-      const title = h.question.replace(/^(分析|提取)：/, "");
-      html += `<button type="button" class="side-item${h.thread_id === curTid && S.view === "qa" ? " active" : ""}" data-thread="${h.thread_id}" title="${esc(title)}${h.branch_from ? `（分支自：${esc(h.branch_from)}）` : ""}">
-        ${h.branch_of ? '<svg class="br" aria-label="分支" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="12.5" r="1.5"/><circle cx="12" cy="6" r="1.5"/><path d="M4 5v6M12 7.5c0 2.5-8 1.5-8 3.5"/></svg>' : ""}
-        <span class="t">${esc(title)}</span>${h.turns > 1 ? `<span class="n">${h.turns}</span>` : ""}</button>`;
+      html += histRowHTML(h, curTid);
+    }
+    if (!searching && list.length > limit) {
+      html += `<button type="button" class="side-more" data-hist-more="1">显示更早的 ${list.length - limit} 个</button>`;
     }
     $("history").innerHTML = html;
     let f = "";
     for (const s of S.sources) {
       const name = sourceName(s);
-      f += `<button type="button" class="side-item${S.view === "lib" ? " active" : ""}" data-lib="1" title="${esc(s.kind === "apple_notes" ? "Mac 备忘录（导出在 " + s.path + "）" : s.path)}">
+      const where = s.kind === "apple_notes" ? "Mac 备忘录（导出在 " + s.path + "）" : s.path;
+      f += `<button type="button" class="side-item two${S.view === "lib" ? " active" : ""}" data-lib="1" title="${esc(where)}">
         ${s.kind === "apple_notes" ? '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="2"/><path d="M5.5 5.5h5M5.5 8h5M5.5 10.5h3"/></svg>' : '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z"/></svg>'}
-        <span class="t">${esc(name)}</span><span class="n">${fmt(s.files)}</span></button>`;
+        <span class="tt"><span class="t">${esc(name)}</span><span class="p">${esc(s.kind === "apple_notes" ? "备忘录 App" : shortPath(s.path))}</span></span>
+        <span class="n">${fmt(s.files)}</span></button>`;
     }
     if (!S.sources.length) f = '<div class="side-empty">还没有添加文件夹</div>';
     f += `<button type="button" class="side-item" data-lib="1"><span class="t">管理资料库…</span></button>`;
     $("folders").innerHTML = f;
+    const folded = !!S.libFolded;
+    $("side-lib").classList.toggle("folded", folded);
+    $("lib-fold").setAttribute("aria-expanded", String(!folded));
+    $("lib-count").textContent = folded && S.sources.length ? ` · ${S.sources.length}` : "";
+  }
+
+  let histTimer = null;
+  function onHistSearch() {
+    S.histQuery = $("hist-q").value;
+    clearTimeout(histTimer);
+    if (!S.histQuery.trim()) { S.histResults = null; renderSide(); return; }
+    histTimer = setTimeout(async () => {
+      const q = S.histQuery;
+      try {
+        const r = await api("search_history", q);
+        if (q === S.histQuery) { S.histResults = r; renderSide(); }
+      } catch (e) { /* 忽略 */ }
+    }, 200);
+  }
+
+  async function deleteThread(tid) {
+    tid = Number(tid);
+    const r = await api("delete_thread", tid);
+    S.delConfirm = null;
+    if (r.error) { toast(r.error); renderSide(); renderThreadHead(); return; }
+    if (S.thread && S.thread.id === tid) {
+      S.thread = null; S.cur = null; S.sel = null; S.selTurn = null;
+      renderQA(); renderAside();
+    }
+    S.history = r.history || S.history.filter((h) => h.thread_id !== tid);
+    if (S.histResults) S.histResults = S.histResults.filter((h) => h.thread_id !== tid);
+    renderSide(); renderThreadHead();
+    toast(`已删除对话（${r.deleted} 轮）`);
   }
 
   const REASON = {
@@ -786,8 +857,15 @@
     if (!turns.length) { head.hidden = true; head.innerHTML = ""; return; }
     const title = turns[0].question.replace(/^(分析|提取)：/, "");
     head.hidden = false;
+    if (S.delConfirm === S.thread.id) {
+      head.innerHTML = `<div class="th-title">删除这个对话（${turns.length} 轮）？删除后不能恢复</div>
+        <button type="button" class="btn small" data-del-no="1">取消</button>
+        <button type="button" class="btn small danger" data-del-yes="${S.thread.id}">删除</button>`;
+      return;
+    }
     head.innerHTML = `<div class="th-title" title="${esc(title)}">${turns[0].branch_of ? '<span class="th-branch">分支</span>' : ""}${esc(title)}</div>
       <span class="th-meta">${turns.length} 轮</span>
+      <button type="button" class="btn small" data-del-thread="${S.thread.id}" title="删除这个对话">删除</button>
       <button type="button" class="btn small" data-action="new" title="新对话（⌘N）">新对话</button>`;
   }
 
@@ -1340,6 +1418,14 @@
           </div></div>
         <button type="button" class="switch" role="switch" aria-checked="${!!S.settings.web_search}" aria-labelledby="web-label" id="web-switch"></button>
       </section>
+      <section class="setting">
+        <div class="txt"><div class="h" id="logdays-label">日志保留</div>
+          <div class="d">运行日志、启动日志和模型调用记录只保留最近这些天，更早的自动删除（打开应用时和之后每 6 小时检查一次，后台服务也一样）。
+          问答记录不受影响。想马上全部删掉，可以在“日志”页点“删除全部日志”。</div></div>
+        <select id="log-days" class="mini" aria-labelledby="logdays-label">
+          ${[1, 3, 7, 14, 30, 90].map((n) => `<option value="${n}"${Number(S.settings.log_days || 7) === n ? " selected" : ""}>${n} 天</option>`).join("")}
+        </select>
+      </section>
       <section class="setting" id="daemon-setting" hidden></section>
       <section class="setting"><div class="txt"><div class="h">运行信息</div>
         <div class="kv" style="margin-top:8px">${models}
@@ -1353,6 +1439,11 @@
     });
     $("settings-open-logs").addEventListener("click", openLogsFolder);
     $("web-switch").addEventListener("click", toggleWeb);
+    $("log-days").addEventListener("change", async (e) => {
+      const r = await api("set_setting", "log_days", Number(e.target.value));
+      if (r.error) { toast(r.error); return; }
+      S.settings = r; toast(`日志保留 ${r.log_days} 天，更早的已删除`);
+    });
     $("web-provider").addEventListener("change", async (e) => {
       S.settings = await api("set_setting", "web_provider", e.target.value);
       renderSettings();
@@ -1819,6 +1910,17 @@
     if (d.kfile) return select(d.kfile, d.turn);
     if (d.sel) return select(d.sel);
     if (d.thread) return openThread(d.thread);
+    if (d.delThread) {
+      const tid = Number(d.delThread);
+      if (!$("generating").hidden && S.thread && S.thread.id === tid) { toast("这个对话正在生成回答，先停止再删除"); return; }
+      S.delConfirm = tid; renderSide(); renderThreadHead();
+      const yes = document.querySelector(`[data-del-yes="${tid}"]`);
+      if (yes) yes.focus();
+      return;
+    }
+    if (d.delNo) { S.delConfirm = null; renderSide(); renderThreadHead(); return; }
+    if (d.delYes) return deleteThread(d.delYes);
+    if (d.histMore) { S.histLimit = (S.histLimit || HIST_PAGE) + 30; return renderSide(); }
     if (d.lib) return showView("lib");
     if (d.openUrl != null) { const r = await api("open_url", d.openUrl); if (r.error) toast(r.error); return; }
     if (d.open != null) { const r = await api("open_file", d.open); if (r.error) toast(r.error); return; }
@@ -2006,6 +2108,23 @@
   });
   $("log-filter").addEventListener("input", (e) => { S.log.filter = e.target.value; renderLogs(); });
   $("log-clear").addEventListener("click", () => { S.log.lines = []; S.log.histMore = false; renderLogs(); });
+  // 删除全部日志：点两次确认（4 秒内）
+  let logDelTimer = null;
+  $("log-delete").addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    if (!btn.dataset.armed) {
+      btn.dataset.armed = "1"; btn.textContent = "再点一次确认删除";
+      clearTimeout(logDelTimer);
+      logDelTimer = setTimeout(() => { delete btn.dataset.armed; btn.textContent = "删除全部日志"; }, 4000);
+      return;
+    }
+    clearTimeout(logDelTimer); delete btn.dataset.armed; btn.textContent = "删除全部日志";
+    const r = await api("clear_logs");
+    if (r.error) { toast(r.error); return; }
+    Object.assign(S.log, { lines: [], calls: [], histLoaded: false, histMore: false, callsMore: false });
+    renderLogs(); pollLogs();
+    toast(`已删除全部日志${r.calls ? `（含 ${r.calls} 条模型调用记录）` : ""}`);
+  });
   $("log-copy").addEventListener("click", () => {
     if (S.log.tab === "calls") return copy(JSON.stringify(S.log.calls, null, 2));
     copy(S.log.lines.filter(matchFilter).map((x) => `${x.time}.${String(x.ms).padStart(3, "0")} ${x.level} ${x.source}: ${x.msg}`).join("\n"));
@@ -2020,6 +2139,13 @@
   });
   $("btn-new").addEventListener("click", newQuestion);
   $("btn-add-side").addEventListener("click", addFolder);
+  $("hist-q").addEventListener("input", onHistSearch);
+  $("hist-q").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.target.value = ""; onHistSearch(); } });
+  $("lib-fold").addEventListener("click", () => {
+    S.libFolded = !S.libFolded;
+    try { localStorage.setItem("lkos.libFolded", S.libFolded ? "1" : ""); } catch (e) { /* 忽略 */ }
+    renderSide();
+  });
   $("btn-stop").addEventListener("click", () => api("stop"));
   async function openScope() {
     closeMenu(); closePicker();

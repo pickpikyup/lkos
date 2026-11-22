@@ -189,8 +189,15 @@ class Repository:
             self.conn.execute("UPDATE qa_history SET thread_id = ? WHERE id = ?", (hid, hid))
         return hid
 
-    def list_history(self, limit: int = 200) -> list[dict]:
-        """对话列表（每个对话一条）：标题是第一轮的问题，按最近一轮的时间倒序。"""
+    def list_history(self, limit: int = 200, query: str | None = None) -> list[dict]:
+        """对话列表（每个对话一条）：标题是第一轮的问题，按最近一轮的时间倒序。
+        query：只列出包含这些词的对话（空格分开的每个词都要出现在某一轮的问题或回答里，不区分大小写）。"""
+        terms = [t for t in (query or "").split() if t][:8]
+        where, args = "", []
+        for t in terms:
+            where += (" AND t.tid IN (SELECT COALESCE(thread_id, id) FROM qa_history "
+                      "WHERE instr(lower(question || ' ' || answer), lower(?)) > 0)")
+            args.append(t)
         rows = self.conn.execute(
             """SELECT t.tid AS thread_id, t.turns, t.last_at AS asked_at, t.last_id,
                       f.id, f.question, f.not_found, f.kind, f.branch_of,
@@ -199,7 +206,8 @@ class Repository:
                             MAX(id) AS last_id, MIN(id) AS first_id
                      FROM qa_history GROUP BY COALESCE(thread_id, id)) t
                JOIN qa_history f ON f.id = t.first_id
-               ORDER BY t.last_id DESC LIMIT ?""", (limit,))
+               WHERE 1 = 1""" + where + """
+               ORDER BY t.last_id DESC LIMIT ?""", (*args, limit))
         return [dict(r) for r in rows]
 
     def thread_turns(self, thread_id: int) -> list[dict]:
@@ -644,6 +652,13 @@ class Repository:
         )
 
     # ---------- 日志与统计 ----------
+    def prune_calls(self, before_iso: str) -> int:
+        """删掉 before_iso（UTC ISO 时间）之前的模型调用记录。"""
+        return self.conn.execute("DELETE FROM call_logs WHERE ts < ?", (before_iso,)).rowcount
+
+    def clear_calls(self) -> int:
+        return self.conn.execute("DELETE FROM call_logs").rowcount
+
     def log_call(self, entry: CallLog) -> None:
         self.conn.execute(
             """INSERT INTO call_logs(owner_id, ts, task, provider, model, latency_ms, ttft_ms, input_tokens,

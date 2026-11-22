@@ -105,7 +105,10 @@ class ChatMixin:
             log.info("回答完成（%s）：首字 %s ms、共 %s ms、输入 %s / 输出 %s tokens、出处 %s", choice["name"], ans.ttft_ms,
                      ans.latency_ms, ans.input_tokens, ans.output_tokens, record["cited"] or "无")
             return record
-        return self._start({"chat": "c", "qa": "q"}.get(mode, "a"), work)
+        out = self._start({"chat": "c", "qa": "q"}.get(mode, "a"), work)
+        if "qid" in out and thread_id:
+            self._active_thread = int(thread_id)
+        return out
 
     def _web_extra(self) -> dict:
         """这一轮的联网情况（查了什么、找到几个网页、出错原因），存进问答记录。"""
@@ -221,5 +224,12 @@ class ChatMixin:
         return {"thread_id": tid, "turns": self.thread(tid)}
 
     def delete_thread(self, thread_id: int) -> dict:
-        n = self._call(lambda: self._app.repo.delete_thread(int(thread_id)))
-        return {"ok": True, "deleted": n}
+        """删除整个对话（所有轮次），不能恢复。从它分出去的分支对话是独立的副本，不受影响。"""
+        tid = int(thread_id)
+        if self._busy.is_set() and self._active_thread is not None and int(self._active_thread) == tid:
+            return {"error": "这个对话正在生成回答，先停止再删除"}
+        n = self._call(lambda: self._app.repo.delete_thread(tid))
+        if not n:
+            return {"error": "这个对话已经不存在"}
+        log.info("已删除对话 #%d（%d 轮）", tid, n)
+        return {"ok": True, "deleted": n, "history": self._call(lambda: self._app.repo.list_history(limit=500))}

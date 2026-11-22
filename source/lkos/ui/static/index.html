@@ -13,16 +13,27 @@
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
       新对话<span class="kbd">⌘N</span>
     </button>
+    <!-- 资料库固定在上面，不随对话历史滚动；可以折叠，文件夹多时自己滚动 -->
+    <div class="side-lib" id="side-lib">
+      <div class="side-label">
+        <button type="button" class="fold" id="lib-fold" aria-expanded="true" aria-controls="folders">
+          <svg class="chev" aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4l2.5 2.5L7.5 4"/></svg>
+          资料库<span class="fold-n" id="lib-count"></span>
+        </button>
+        <button type="button" id="btn-add-side" aria-label="添加文件夹">
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+        </button>
+      </div>
+      <div class="side-folders" id="folders"></div>
+    </div>
+    <!-- 对话历史：只有这一块滚动 -->
+    <div class="side-hist-head">
+      <div class="side-label">对话</div>
+      <label for="hist-q" class="sr-only">搜索对话</label>
+      <input id="hist-q" class="hist-q" type="search" placeholder="搜索对话…" autocomplete="off">
+    </div>
     <div class="side-scroll">
       <div class="side-group" id="history"></div>
-      <div class="side-group">
-        <div class="side-label">资料库
-          <button type="button" id="btn-add-side" aria-label="添加文件夹">
-            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
-          </button>
-        </div>
-        <div id="folders"></div>
-      </div>
     </div>
     <button type="button" class="status-card empty" id="status-card">
       <div class="h"><span class="dot" aria-hidden="true"></span><span id="status-h">正在启动…</span></div>
@@ -123,6 +134,7 @@
       <button type="button" class="btn small" id="log-copy">复制</button>
       <button type="button" class="btn small" id="log-clear">清空显示</button>
       <button type="button" class="btn small" id="log-folder">打开日志文件夹</button>
+      <button type="button" class="btn small danger" id="log-delete" title="删除运行日志、启动日志和模型调用记录（问答记录不受影响）">删除全部日志</button>
     </div>
     <div class="log-body" id="log-body" role="log" aria-live="off"></div>
     <div class="log-foot hint" id="log-foot"></div>
