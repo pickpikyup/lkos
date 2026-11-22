@@ -74,7 +74,7 @@ class Tagger:
         hint = VOCAB[key].format(tags="、".join(vocab[:30]) if key == "zh" else ", ".join(vocab[:30])) if vocab else ""
         prompt = PROMPTS[key].format(name=name, text=head, vocab=hint)
         with (self.marker.active() if self.marker else nullcontext()):
-            result, _ = self.gateway.chat(TASK, [{"role": "user", "content": prompt}], max_tokens=TAG_TOKENS,
+            result, _ = self.gateway.chat(TASK, [{"role": "user", "content": prompt}], max_tokens=TAG_TOKENS, short=True,
                                           log_as="tags")
         tags = parse_tags(result.text)
         self.repo.set_model_tags(f.id, tags)

@@ -50,7 +50,11 @@ class ChatModelConfig:
     ref: str
     context_window: int = 8192
     think: bool = False
-    max_output: int | None = None     # 在线模型：没有指定输出上限时用它（本机模型用任务的 max_tokens）
+    max_output: int | None = None     # 在线模型的输出上限（None = 服务商默认）；本机模型用任务的 max_tokens
+
+    def output_reserve(self, fallback: int = 8192) -> int:
+        """在线模型给回答（含思考）预留多少上下文：按输出上限，没写时按 fallback，最多占上下文的 1/4。"""
+        return max(512, min(self.max_output or fallback, self.context_window // 4))
 
 
 @dataclass

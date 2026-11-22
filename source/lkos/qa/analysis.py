@@ -13,20 +13,20 @@ import re
 from contextlib import nullcontext
 from typing import Callable
 
-from lkos.errors import Cancelled, LkosError, ModelUnavailableError
-from lkos.gateway.gateway import out_of_budget_message
+from lkos.errors import Cancelled, LkosError
 from lkos.qa.citations import validate_citations
 from lkos.qa.history import conversation_lang, history_messages, messages_tokens, prior_chunks
 from lkos.qa.prompt import LABELS, fit_context, format_source, lang_key, with_web_note
 from lkos.types import Answer
+from lkos.web.search import interleave, web_queries
 
 TASK = "knowledge_qa"
-PLAN_TOKENS = 160
+PLAN_TOKENS = 160            # 本机模型的输出上限；在线模型一律用模型配置的“输出上限”（网关统一处理）
 KEYWORD_TOKENS = 120
-ONLINE_SHORT_TOKENS = 2048   # 在线模型拆方面 / 写关键词的输出上限：推理模型要先思考，160 / 120 不够用
 # 联网搜索：(每次结果数, 取正文的网页数, 每个网页最多多少字)
 WEB_LOCAL = (3, 2, 600)
 WEB_ONLINE = (5, 3, 2000)
+WEB_CAP = {False: 3, True: 8}   # 最多送入多少个网页片段（本机 / 在线），不让网页挤掉本机资料
 ANALYSIS_TOKENS = 900
 PER_ASPECT = 3
 PER_LANG = 3
@@ -124,10 +124,10 @@ class Analyzer:
         pc = self.cfg.providers.get(ref.split("/", 1)[0])
         online = bool(pc and pc.is_remote)
         per_aspect, per_lang = (PER_ASPECT * 2, PER_LANG * 2) if online else (PER_ASPECT, PER_LANG)
-        short = dict(model_override=model_override, log_as="analysis", on_thinking=on_thinking)
+        short = dict(model_override=model_override, log_as="analysis", on_thinking=on_thinking, short=True)
         progress("plan", 0, 1)
         plan, _ = self.gateway.chat(TASK, [{"role": "user", "content": P["plan"].format(q=q)}],
-                                    max_tokens=ONLINE_SHORT_TOKENS if online else PLAN_TOKENS, **short)
+                                    max_tokens=PLAN_TOKENS, **short)
         aspects = parse_aspects(plan.text) or [q]
         progress("plan", 1, 1, {"aspects": aspects, **_budget_note(plan, "没拆出方面，按整个问题检索")})
         if cancelled():
@@ -135,7 +135,7 @@ class Analyzer:
 
         progress("keywords", 0, 1)
         kw_out, _ = self.gateway.chat(TASK, [{"role": "user", "content": KEYWORD_PROMPT.format(q=q)}],
-                                      max_tokens=ONLINE_SHORT_TOKENS if online else KEYWORD_TOKENS, **short)
+                                      max_tokens=KEYWORD_TOKENS, **short)
         keywords = parse_keywords(kw_out.text)
         progress("keywords", 1, 1, {"keywords": keywords, **_budget_note(kw_out, "没写出关键词")})
 
@@ -146,12 +146,8 @@ class Analyzer:
         jobs += [("lang", lang, keywords[lang], lang, per_lang) for lang in LANGS if keywords.get(lang)]
         # 联网搜索：原问题 + （在线模型）关键词、前两个方面；开关在执行到这一步时才读，随时打开 / 关闭都对没做的检索生效
         if self.web is not None:
-            wk = keywords.get("zh" if key == "zh" else "en") or ""
-            wq = [q[:120]]
-            if online and wk:
-                wq += [wk] + [f"{wk.split()[0]} {a}" for a in aspects[:2] if a != q]
-            jobs += [("web", w, w, "", 0) for w in dict.fromkeys(wq)]
-        groups, lang_hits, web_n = [], {}, 0
+            jobs += [("web", w, w, "", 0) for w in web_queries(q, keywords, aspects, key, online)]
+        groups, web_groups, lang_hits = [], [], {}
         wk_, wf, wc = WEB_ONLINE if online else WEB_LOCAL
         for i, (kind, label, query, lang, k) in enumerate(jobs, start=1):
             if cancelled():
@@ -160,18 +156,19 @@ class Analyzer:
                 if not self.web.enabled():
                     continue
                 progress("search", i - 1, len(jobs), {"current": f"联网：{label}"})
-                hits = self.web.chunks(query, k=wk_, fetch=wf, max_chars=wc, cancelled=cancelled)
-                web_n += len(hits)
-                groups.append(hits)
+                web_groups.append(self.web.chunks(query, k=wk_, fetch=wf, max_chars=wc, cancelled=cancelled))
                 continue
             progress("search", i - 1, len(jobs), {"current": LANG_NAMES.get(label, label) if kind == "lang" else label})
             hits = self.retriever.search(query, k=k, lang=lang, **extra)
             groups.append(hits)
             if kind == "lang":
                 lang_hits[label] = len(hits)
+        web_pool = interleave(*web_groups)[:WEB_CAP[online]]     # 各次联网轮流取、去重、限量
+        if web_pool:
+            groups.append(web_pool)
         done = {"lang_hits": lang_hits}
         if self.web is not None and self.web.run.queries:
-            done["web_pages"] = web_n
+            done["web_pages"] = len(web_pool)
         progress("search", len(jobs), len(jobs), done)
         info = {"keywords": keywords, "lang_hits": lang_hits}
 
@@ -189,7 +186,7 @@ class Analyzer:
                 key, "No relevant information was found."), no_context=True), aspects, info
         mcfg = self.cfg.chat_model(ref)
         num_ctx = mcfg.context_window
-        out_tokens = max(ANALYSIS_TOKENS, mcfg.max_output or 0) if online else ANALYSIS_TOKENS
+        out_tokens = mcfg.output_reserve() if online else ANALYSIS_TOKENS
         hist = history_messages(list(turns), online, num_ctx)
         aspect_text = "\n".join(f"{i}. {a}" for i, a in enumerate(aspects, start=1))
         context = fit_context(q + aspect_text + P["system"], ordered, lang_key(key), num_ctx - messages_tokens(hist),
@@ -209,8 +206,7 @@ class Analyzer:
                                                                 aspects=aspect_text)}],
             model_override=model_override, on_token=on_token, max_tokens=out_tokens, log_as="analysis",
             on_thinking=on_thinking)
-        if result.out_of_budget:
-            raise ModelUnavailableError(out_of_budget_message(result, out_tokens))
+        self.gateway.ensure_answer(result, ref)
         text, citations, invalid = validate_citations(result.text, context)
         return Answer(text=text, citations=citations, invalid_refs=invalid, no_context=False, context=context,
                       ttft_ms=result.ttft_ms, latency_ms=result.latency_ms, input_tokens=result.input_tokens,

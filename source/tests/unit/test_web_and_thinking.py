@@ -241,7 +241,7 @@ def test_online_analysis_short_calls_get_room_to_think(setup):
     ans, aspects, info = b._call(lambda: b._app.analyzer.analyze(
         "项目二期的预算和进度怎么样？", model_override=ONLINE, on_thinking=thoughts.append,
         on_progress=lambda s, d, t, x=None: details.update(x or {})))
-    assert cloud.limits[:2] == [2048, 2048]                         # 在线模型拆方面 / 写关键词：留足思考的额度
+    assert cloud.limits[:2] == [None, None]          # 在线模型一律按模型配置的输出上限（留空 = 服务商默认），不再按回答长度截断
     assert aspects == ["项目二期的预算和进度怎么样？"] and "思考" in details["note"]   # 拆分失败时按整个问题检索，并说明原因
     assert info["keywords"] and ans.text and thoughts
     local.limits.clear()

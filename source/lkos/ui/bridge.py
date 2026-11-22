@@ -28,7 +28,7 @@ from lkos.errors import Cancelled, LkosError
 from lkos.evaluation.evaluate import is_not_found
 from lkos.parsers.base import file_type_groups
 from lkos.sources import apple_notes, obsidian
-from lkos.models_config import load_models, model_choices
+from lkos.models_config import load_models, load_models_checked, model_choices
 from lkos.ui.chat_api import ChatMixin
 from lkos.ui.models_api import ModelsMixin
 from lkos.parsers.ocr import available as ocr_available
@@ -356,6 +356,9 @@ class Bridge(ChatMixin, ModelsMixin):
         set_level(self._settings["dev_mode"])
         log.info("应用启动：数据目录 %s，问答模型 %s，检索策略 %s", self._app.home,
                  self._app.cfg.tasks["knowledge_qa"].default_model, self._app.cfg.retrieval.strategy)
+        _, models_err = load_models_checked(self._app.home)
+        if models_err:
+            log.error("模型配置文件有错误，在线模型暂时不可用：%s", models_err)
         self._cancel = threading.Event()
         self._busy = threading.Event()
         # 应用打开期间持有 app.lock：后台服务看到后不再索引，由应用接手
@@ -422,7 +425,8 @@ class Bridge(ChatMixin, ModelsMixin):
                     "history": self._app.repo.list_history(), "sources": self._sources(),
                     "index": self._indexer.state, "settings": dict(self._settings),
                     "file_types": file_type_groups(list(self._app.cfg.indexing.extensions)),
-                    "choices": model_choices(load_models(self._app.home), self._app.cfg)}
+                    "choices": model_choices(load_models(self._app.home), self._app.cfg),
+                    "models_error": load_models_checked(self._app.home)[1]}
         out = self._call(run)
         for m in out["models"]:
             (log.info if m["ok"] else log.warning)("模型 %s：%s", m["ref"], m["message"] or ("就绪" if m["ok"] else "不可用"))
@@ -446,8 +450,9 @@ class Bridge(ChatMixin, ModelsMixin):
 
         def on_context(ctx) -> None:
             dbg = self._app.retriever.last_debug
-            log.info("检索 %d ms：送入 %d 个片段（问题语言 %s、策略 %s）", int((time.perf_counter() - t0) * 1000),
-                     len(ctx), dbg.lang if dbg else "-", dbg.strategy if dbg else "-")
+            web_n = sum(1 for c in ctx if c.file_type == "web")
+            log.info("检索 %d ms：送入 %d 个片段%s（最后一次检索：语言 %s、策略 %s）", int((time.perf_counter() - t0) * 1000),
+                     len(ctx), f"，其中网页 {web_n} 段" if web_n else "", dbg.lang if dbg else "-", dbg.strategy if dbg else "-")
             if dbg:
                 log.debug("关键词查询：%s；向量候选 %d、关键词候选 %d", dbg.fts_query or "（无）",
                           len(dbg.vec_ids), len(dbg.fts_ids))

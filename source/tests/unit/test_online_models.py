@@ -107,7 +107,7 @@ def test_models_json_overrides_and_choices(tmp_path):
     assert over["tasks"]["knowledge_qa"]["default_model"] == "local/qwen3:8b"
     assert over["providers"]["on-claude"] == {"type": "anthropic", "base_url": "https://api.anthropic.com", "api_key": "good"}
     assert "on-off" not in over["providers"] and over["privacy"] == {"remote_enabled": True, "offline_mode": False}
-    assert over["models"]["chat"]["on-claude/claude-sonnet-5-5"]["max_output"] == 4096
+    assert over["models"]["chat"]["on-claude/claude-sonnet-5-5"]["max_output"] is None     # 输出上限留空 = 服务商默认
     assert (home / "models.json").stat().st_mode & 0o077 == 0
     # App 读取 models.json（测试覆盖仍优先）
     a = App.open(home=home, overrides=fake_overrides(), providers={"test": FakeProvider("test", dim=TEST_DIM)})

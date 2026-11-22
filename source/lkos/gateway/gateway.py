@@ -46,11 +46,9 @@ def build_provider(pc: ProviderConfig, embedding_dim: int, transport=None):
             transport=transport,
         )
     if pc.type in ("anthropic", "openai"):
-        from lkos.gateway.online import AnthropicProvider, OpenAICompatProvider
+        from lkos.gateway.online import online_provider
 
-        cls = AnthropicProvider if pc.type == "anthropic" else OpenAICompatProvider
-        return cls(pc.name, base_url=opts.get("base_url") or "", api_key=opts.get("api_key") or "",
-                   timeout_s=float(opts.get("timeout_s", 120)), transport=transport)
+        return online_provider(pc.name, pc.type, opts, transport=transport)
     if pc.type == "hermes":
         from lkos.gateway.hermes import HermesProvider
 
@@ -71,16 +69,31 @@ def _accepts(fn, name: str) -> bool:
     return name in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
 
 
-def out_of_budget_message(result: ChatResult, max_tokens: int | None = None) -> str:
-    """输出额度用完、没写出正文时给用户看的说明。"""
+def out_of_budget_message(result: ChatResult, max_tokens: int | None = None, remote: bool = True) -> str:
+    """输出上限用完、没写出正文时给用户看的说明（写明能照着做的办法）。"""
     t = len(getattr(result, "thinking", "") or "")
-    lim = f"（{max_tokens} tokens）" if max_tokens else ""
     why = f"都用在了思考上（思考了 {t} 字）" if t else "用完了"
-    return (f"模型的输出额度{lim}{why}，没有写出回答。可以在左栏“模型”里调大这个模型的“输出上限”后重试，"
-            "或换一个不带思考的模型。")
+    if not remote:
+        return f"本机模型的输出上限（{max_tokens} tokens）{why}，没有写出回答。可以换一个不带思考的本机模型。"
+    if max_tokens:
+        return (f"模型的输出上限（{max_tokens} tokens）{why}，没有写出回答。请在左栏“模型”里点这个模型的“编辑”，"
+                "把“输出上限”调大或清空（清空 = 按服务商默认）后重试。")
+    return (f"按服务商默认的输出上限，模型的输出仍然{why}，没有写出回答。可以在左栏“模型”→“编辑配置文件”里给这个模型加 "
+            "\"extra_body\": {\"reasoning_effort\": \"low\"} 之类的参数降低思考强度（具体参数以服务商文档为准），或换一个模型。")
 
 
 class ModelGateway:
+    def ensure_answer(self, result: ChatResult, ref: str) -> None:
+        """回答正文为空、且输出上限被用完时报错（说明怎么调），不给用户一个空回答。"""
+        if not result.out_of_budget:
+            return
+        pname, _ = split_model_ref(ref)
+        pc = self.cfg.providers.get(pname)
+        remote = bool(pc and pc.is_remote)
+        mcfg = self.cfg.chat_model(ref)
+        limit = mcfg.max_output if remote else (mcfg.max_output or self.cfg.tasks["knowledge_qa"].max_tokens)
+        raise ModelUnavailableError(out_of_budget_message(result, limit, remote))
+
     def __init__(self, cfg: Config, logger: CallLogger | None = None, providers: dict | None = None,
                  snapshot: Callable[[], tuple[int | None, int | None]] = memory_snapshot):
         self.cfg = cfg
@@ -118,20 +131,27 @@ class ModelGateway:
     # ---------- chat ----------
     def chat(self, task: str, messages: list[dict], model_override: str | None = None,
              on_token: TokenCallback | None = None, max_tokens: int | None = None,
-             log_as: str | None = None, on_thinking: ThinkingCallback | None = None) -> tuple[ChatResult, str]:
-        """返回 (结果, 实际使用的模型引用)。max_tokens：覆盖任务配置的输出上限；log_as：调用日志里的任务名；
-        on_thinking：推理模型的思考过程（provider 支持时才传）。"""
+             log_as: str | None = None, on_thinking: ThinkingCallback | None = None,
+             short: bool = False) -> tuple[ChatResult, str]:
+        """返回 (结果, 实际使用的模型引用)。
+        max_tokens：本机模型的输出上限（覆盖任务配置）。在线模型一律用模型配置的“输出上限”（留空 = 服务商默认）：
+        推理模型的思考也算在输出里，调用方按“回答长度”给的小上限会被思考占满；回答长短由提示词控制。
+        log_as：调用日志里的任务名；on_thinking：推理模型的思考过程（provider 支持时才传）；
+        short：简短的内部调用（在线模型可附加 extra_body_short，例如关闭思考）。"""
         ref = self.resolve(task, model_override)
         pname, model = split_model_ref(ref)
         self._check_privacy(pname)
         provider = self.provider(pname)
         mcfg = self.cfg.chat_model(ref)
         tcfg = self.cfg.tasks.get(task)
+        pc = self.cfg.providers.get(pname)
+        remote = bool(pc and pc.is_remote)
         opts = ChatOptions(
             temperature=tcfg.temperature if tcfg else 0.3,
-            max_tokens=max_tokens or mcfg.max_output or (tcfg.max_tokens if tcfg else 1024),
+            max_tokens=mcfg.max_output if remote else (max_tokens or mcfg.max_output or (tcfg.max_tokens if tcfg else 1024)),
             num_ctx=mcfg.context_window,
             think=mcfg.think,
+            short=short,
         )
         task = log_as or task
         try:
@@ -148,8 +168,9 @@ class ModelGateway:
         if thinking or finish not in (None, "stop"):
             _rlog.debug("模型 %s/%s（%s）：思考 %d 字、结束原因 %s", pname, model, task, len(thinking), finish or "-")
         if not (result.text or "").strip() and finish == "length":
-            _rlog.warning("模型 %s/%s（%s）的输出额度（%d tokens）用完了，没有写出正文%s", pname, model, task,
-                          opts.max_tokens, f"（额度都花在了 {len(thinking)} 字的思考上）" if thinking else "")
+            _rlog.warning("模型 %s/%s（%s）的输出上限（%s）用完了，没有写出正文%s", pname, model, task,
+                          f"{opts.max_tokens} tokens" if opts.max_tokens else "服务商默认", 
+                          f"（都花在了 {len(thinking)} 字的思考上）" if thinking else "")
         self._log(task, pname, model, latency_ms=result.latency_ms, ttft_ms=result.ttft_ms,
                   input_tokens=result.input_tokens, output_tokens=result.output_tokens)
         return result, ref

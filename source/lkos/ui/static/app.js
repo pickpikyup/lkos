@@ -99,6 +99,7 @@
       S.models = b.models; S.model = b.model; S.history = b.history; S.sources = b.sources; S.index = b.index;
       S.stats = b.stats; S.settings = b.settings || S.settings; setFileTypes(b.file_types);
       S.choices = b.choices || [];
+      S.modelsError = b.models_error || null;
     } catch (err) {
       S.bootError = String(err && err.message || err);
     }
@@ -270,8 +271,10 @@
   function modelBanner() {
     const bad = S.models.filter((m) => !m.ok);
     if (S.bootError) return `<div class="banner" role="alert">启动出错：${esc(S.bootError)}</div>`;
-    if (!bad.length) return "";
-    return `<div class="banner" role="alert"><div><strong>本机模型没有就绪</strong>：${bad.map((m) => esc(m.ref)).join("、")}。<br>请先打开 Ollama 应用；如果缺模型，在终端运行 <code>ollama pull 模型名</code>，然后重新打开本应用。也可以在左栏“模型”里换用别的模型。</div></div>`;
+    const fileErr = S.modelsError ? `<div class="banner" role="alert"><div><strong>模型配置文件有错误，在线模型暂时不能用</strong>：${esc(S.modelsError)}<br>
+      请到左栏“模型”→“编辑配置文件”修正（修正前在模型页的保存都会被拒绝，原文件不会被覆盖）。</div></div>` : "";
+    if (!bad.length) return fileErr;
+    return fileErr + `<div class="banner" role="alert"><div><strong>本机模型没有就绪</strong>：${bad.map((m) => esc(m.ref)).join("、")}。<br>请先打开 Ollama 应用；如果缺模型，在终端运行 <code>ollama pull 模型名</code>，然后重新打开本应用。也可以在左栏“模型”里换用别的模型。</div></div>`;
   }
 
   // ---------- 推理模型的思考过程 ----------
@@ -1051,22 +1054,34 @@
       try { data = await api("models"); } catch (e) { box.innerHTML = `<div class="banner">${esc(e.message || e)}</div>`; return; }
     }
     S.mcfg = data;
+    S.modelsError = data.file_error || null;
     S.choices = data.choices; renderModelSelect(); renderComposerTop();
     const cfg = data.config, local = data.local;
     const ed = S.modelEdit;
     let h = `<div class="lib-head"><h1>模型</h1><span class="hint">检索和向量计算总在本机；回答可以用本机或在线模型，对话里每一轮都能换</span></div>`;
+    if (data.file_error) {
+      h += `<div class="banner" role="alert"><div><strong>模型配置文件有错误</strong>：${esc(data.file_error)}<br>
+        在线模型暂时不能用；修正前，这一页上的保存都会被拒绝（原文件不会被覆盖）。
+        <div class="chips" style="margin-top:8px"><button type="button" class="btn small primary" data-models-file="1">编辑配置文件</button>
+        <button type="button" class="btn small" data-models-reload="1">我已在别处改好，重新读取</button></div></div></div>`;
+    }
+    if (S.modelsFile) h += modelsFileHTML(data);
 
     // 在线模型
     h += `<section class="mcard"><div class="mhead"><h2>在线模型</h2><span class="grow"></span>
       <label class="check"><input type="checkbox" id="offline-mode"${cfg.offline_mode ? " checked" : ""}> 离线模式（禁止所有在线模型）</label>
-      <button type="button" class="btn small primary" data-model-add="1"${cfg.offline_mode ? " disabled" : ""}>添加在线模型</button></div>`;
-    if (!cfg.online.length && !(ed && !ed.id)) {
+      <button type="button" class="btn small" data-models-file="1" title="直接编辑 models.json（可以用 JSON 或 YAML 写），界面上没有的参数也能配置">编辑配置文件</button>
+      <button type="button" class="btn small primary" data-model-add="1"${cfg.offline_mode || data.file_error ? " disabled" : ""}>添加在线模型</button></div>`;
+    if (data.file_error) {
+      h += `<div class="hint">配置文件有错误，修正后这里会列出在线模型。</div>`;
+    } else if (!cfg.online.length && !(ed && !ed.id)) {
       h += `<div class="hint">还没有配置。添加后，对话里可以选它回答；本机检索到的资料片段会发送给它（发送前可以确认）。</div>`;
     }
     for (const m of cfg.online) {
       if (ed && ed.id === m.id) { h += modelForm(ed, data); continue; }
       h += `<div class="mrow"><div class="mi"><div class="mn">${esc(m.name)}${m.enabled ? "" : '<span class="tagx">已停用</span>'}</div>
         <div class="md">${esc(m.model)} · ${m.format === "anthropic" ? "Anthropic 接口" : "OpenAI 兼容接口"} · ${esc(m.base_url)} · 上下文 ${fmt(m.context_window)}
+        · 输出上限 ${m.max_tokens ? fmt(m.max_tokens) : "服务商默认"}${advancedKeys(m).length ? ` · 高级参数：${advancedKeys(m).map(esc).join("、")}` : ""}
         · 密钥 ${m.key_set ? "…" + esc(m.key_tail || "已填") : "未填"}${m.web ? ` · <span class="hint">${esc(m.web)}</span>` : ""}</div></div>
         <button type="button" class="btn small" data-model-test="${esc(m.id)}">测试</button>
         <button type="button" class="btn small" data-model-edit="${esc(m.id)}">编辑</button>
@@ -1101,6 +1116,58 @@
     bindModelsPage();
   }
 
+  const BASIC_MODEL_KEYS = ["id", "preset", "name", "format", "base_url", "web", "api_key", "model", "context_window",
+    "max_tokens", "enabled", "added_at", "key_set", "key_tail"];
+  function advancedKeys(m) { return Object.keys(m).filter((k) => !BASIC_MODEL_KEYS.includes(k)); }
+
+  // ---------- 编辑配置文件（models.json，可以用 JSON 或 YAML 写） ----------
+  async function openModelsFile(fmt) {
+    const r = await api("models_file", fmt);
+    S.modelsFile = r; S.modelsFileFmt = r.format; S.modelsFileDirty = false;
+    renderModels(S.mcfg);
+    const t = $("models-text");
+    if (t) { t.focus(); t.scrollIntoView({ block: "nearest" }); }
+  }
+  function bindModelsFile() {
+    const t = $("models-text");
+    if (!t) return;
+    // 页面别处操作会重画：编辑中的文字随时记下，重画后不丢
+    t.addEventListener("input", () => { S.modelsFileDirty = true; S.modelsFile.text = t.value; });
+    t.addEventListener("keydown", (e) => {
+      if (e.key === "Tab") { e.preventDefault(); document.execCommand("insertText", false, "  "); }
+      if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); document.querySelector("[data-models-file-save]").click(); }
+    });
+  }
+  function setModelsFileMsg(text, bad) {
+    const m = $("models-file-msg");
+    if (m) { m.textContent = text; m.classList.toggle("bad", !!bad); }
+  }
+  function modelsFileHTML() {
+    const f = S.modelsFile, help = f.help || {};
+    const sample = f.format === "yaml"
+      ? `  - id: deepseek\n    max_tokens: null          # 留空 = 服务商默认\n    temperature: null         # 不传温度\n    extra_body_short:\n      thinking: {type: disabled}`
+      : `{ "id": "deepseek", "max_tokens": null, "temperature": null,\n  "extra_body_short": { "thinking": { "type": "disabled" } } }`;
+    return `<section class="mcard mfile"><div class="mhead"><h2>编辑配置文件</h2><span class="hint" title="${esc(f.path)}">${esc(f.path)}</span><span class="grow"></span>
+        <span class="seg" role="group" aria-label="写法">
+          <button type="button" class="btn small${f.format === "json" ? " on" : ""}" data-models-file-fmt="json" aria-pressed="${f.format === "json"}">JSON</button>
+          <button type="button" class="btn small${f.format === "yaml" ? " on" : ""}" data-models-file-fmt="yaml" aria-pressed="${f.format === "yaml"}">YAML</button></span>
+        <button type="button" class="btn small" data-models-file-close="1">关闭</button></div>
+      ${f.error ? `<div class="banner" role="alert">文件现在有错误：${esc(f.error)}（下面是原文，改好后点“保存并生效”）</div>` : ""}
+      <textarea id="models-text" class="code" spellcheck="false" aria-label="配置文件内容">${esc(f.text)}</textarea>
+      <div class="mfoot"><span class="hint" id="models-file-msg">保存前会检查格式和每一项的类型，有错不会保存，原文件保持不变。⌘S 保存</span><span class="grow"></span>
+        <button type="button" class="btn small" data-models-file-open="1">用文本编辑器打开</button>
+        <button type="button" class="btn small" data-models-reload="1">重新读取文件</button>
+        <button type="button" class="btn small" data-models-file-revert="1">放弃修改</button>
+        <button type="button" class="btn small" data-models-file-check="1">检查</button>
+        <button type="button" class="btn small primary" data-models-file-save="1">保存并生效</button></div>
+      <details class="mfile-help"><summary>在线模型可以写的高级参数</summary>
+        <div class="kv">${Object.entries(help).map(([k, v]) => `<span class="k"><code>${esc(k)}</code></span><span class="v">${esc(v)}</span>`).join("")}
+          <span class="k"><code>max_tokens</code></span><span class="v">输出上限（含推理模型的思考）；null = 按服务商默认</span></div>
+        <p class="hint">例（online 列表里的一项，只写要改的字段即可，其他字段照旧）：</p><pre class="code">${esc(sample)}</pre>
+        <p class="hint">不认识的字段会原样保留；参数被服务商拒绝时（例如不支持 temperature、max_tokens 太大），应用会自动调整后重试并写进日志。</p>
+      </details></section>`;
+  }
+
   function modelForm(ed, data) {
     const presets = data.presets, g = data.guide;
     const p = presets.find((x) => x.id === ed.preset);
@@ -1120,6 +1187,8 @@
         <select name="model_pick" class="mini model-pick" aria-label="从列表选择模型"${(p && p.models.length) ? "" : " hidden"}>${modelPickOptions(p ? p.models : [], ed.model)}</select>
         <button type="button" class="btn small" data-model-list="1">获取模型列表</button></span>`)}
       ${field("context_window", `<input name="context_window" class="mini" type="number" min="2048" value="${ed.context_window || (p ? p.context_window : 32000)}">`)}
+      ${field("max_tokens", `<input name="max_tokens" class="mini" type="number" min="16" step="1024" placeholder="留空 = 服务商默认" value="${ed.max_tokens || ""}">`)}
+      <div class="fh wide">其他参数（温度、思考开关、请求头等）在上方“编辑配置文件”里写，保存这里的表单不会清掉它们。</div>
       <label class="check"><input type="checkbox" name="enabled"${ed.enabled !== false ? " checked" : ""}> 启用（在对话的模型下拉框里出现）</label>
       <div class="mfoot"><span class="hint" id="model-test-msg">密钥明文保存在本机 data/models.json（不进 Git）</span><span class="grow"></span>
         <button type="button" class="btn small" data-model-test-form="1">测试连接</button>
@@ -1140,10 +1209,12 @@
       base_url: f.base_url.value.trim(), web: f.web ? f.web.value.trim() : (p ? p.web : ""),
       format: p ? p.format : f.format.value, api_key: f.api_key.value.trim(), model: f.model.value.trim(),
       context_window: Number(f.context_window.value) || 32000, enabled: f.enabled.checked,
+      max_tokens: f.max_tokens.value.trim() ? Number(f.max_tokens.value) : null,
     };
   }
 
   function bindModelsPage() {
+    bindModelsFile();
     const mf = $("model-form");
     if (mf) {
       mf.model_pick.addEventListener("change", () => { if (mf.model_pick.value) mf.model.value = mf.model_pick.value; });
@@ -1165,6 +1236,7 @@
     }
     $("offline-mode").addEventListener("change", async (e) => {
       const r = await api("set_offline", e.target.checked);
+      if (r.error) { toast(r.error); return renderModels(); }
       toast(e.target.checked ? "离线模式：只用本机模型" : "已允许使用在线模型");
       renderModels(r);
     });
@@ -1176,6 +1248,7 @@
       e.preventDefault();
       const f = e.target;
       const r = await api("set_local", f.chat.value, Number(f.ctx.value) || null, null);
+      if (r.error) { toast(r.error); return renderModels(); }
       toast("已保存本机模型设置");
       renderModels(r);
     });
@@ -1776,7 +1849,38 @@
     if (d.modelAdd) { const p = S.mcfg.presets[0]; S.modelEdit = { preset: p.id, name: p.name, base_url: p.base_url, format: p.format, web: p.web, context_window: p.context_window, model: p.models[0] || "" }; S.modelList = null; return renderModels(S.mcfg); }
     if (d.modelEdit) { S.modelEdit = Object.assign({}, S.mcfg.config.online.find((m) => m.id === d.modelEdit)); S.modelList = null; return renderModels(S.mcfg); }
     if (d.modelCancel) { S.modelEdit = null; return renderModels(S.mcfg); }
-    if (d.modelDel) { const r = await api("delete_online", d.modelDel); toast("已删除"); return renderModels(r); }
+    if (d.modelDel) { const r = await api("delete_online", d.modelDel); if (r.error) { toast(r.error); return; } toast("已删除"); return renderModels(r); }
+    if (d.modelsFile) { await openModelsFile(S.modelsFileFmt || "json"); return; }
+    if (d.modelsFileClose) {
+      if (S.modelsFileDirty) { setModelsFileMsg("有没保存的修改：先“保存并生效”，或点“放弃修改”后再关闭", true); return; }
+      S.modelsFile = null; return renderModels(S.mcfg);
+    }
+    if (d.modelsFileFmt) {
+      if (S.modelsFileDirty) { toast("先保存或放弃修改，再切换写法"); return; }
+      return openModelsFile(d.modelsFileFmt);
+    }
+    if (d.modelsFileCheck) {
+      const r = await api("check_models_text", $("models-text").value, S.modelsFile.format);
+      setModelsFileMsg(r.ok ? `✓ 格式正确：${r.online} 个在线模型${r.names.length ? "（" + r.names.join("、") + "）" : ""}` : "✗ " + r.error, !r.ok);
+      return;
+    }
+    if (d.modelsFileSave) {
+      const r = await api("save_models_text", $("models-text").value, S.modelsFile.format);
+      if (r.error) { setModelsFileMsg("✗ 没有保存：" + r.error, true); return; }
+      S.modelsFileDirty = false; S.modelsFile = null; S.modelsError = null;
+      toast("已保存配置文件，马上生效");
+      renderModels(r); renderQA();
+      return;
+    }
+    if (d.modelsFileRevert) { S.modelsFileDirty = false; return openModelsFile(S.modelsFile.format); }
+    if (d.modelsFileOpen) { const r = await api("open_models_file"); toast(r.error || "已用文本编辑器打开，改完后点“重新读取文件”"); return; }
+    if (d.modelsReload) {
+      const r = await api("reload_models_file");
+      if (r.error) { toast("文件仍有错误：" + r.error); S.modelsFile = null; renderModels(r); return; }
+      S.modelsFile = null; S.modelsFileDirty = false; S.modelsError = null; toast("已重新读取配置文件");
+      renderModels(r); renderQA();
+      return;
+    }
     if (d.modelTest) { toast("正在测试…"); const r = await api("test_online", { id: d.modelTest }); toast(r.ok ? "连接正常：" + r.message : r.message); return; }
     if (d.modelTestForm) { $("model-test-msg").textContent = "正在测试…"; const r = await api("test_online", formEntry()); $("model-test-msg").textContent = (r.ok ? "✓ " : "✗ ") + r.message; return; }
     if (d.modelList) {

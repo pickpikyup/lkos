@@ -324,6 +324,62 @@ class WebSearcher:
         return f"{PROVIDERS[p]} 可用，返回 {len(res)} 条结果"
 
 
+# ---------- 搜索词 ----------
+# 问题里“怎么做”的指令词（查找、核实、联网……）和问句词：搜进去只会搜到无关网页（例如“互联网核实”搜到 ChatGPT 官网）
+_ZH_DROP = sorted("""现在 然后 并且 同时 另外 请 帮我 帮忙 麻烦 一下 给我 结合 根据 利用 通过 本地 本机 资料库 知识库 资料 文档
+互联网 网上 网络 联网 在线 网页 信息 查找 查询 搜索 搜一下 找找 找一下 查一下 查查 核实 核对 验证 确认 检索 整理 总结 列出 给出
+输出 事实 客观 不编造 保持 真实 详细 你说的 这些 那些 都对 好的 我想 想知道 看看 告诉我 了解 是多少 是不是 有没有 是否 是什么 有哪些 是哪些 有什么 怎么样 怎样 如何 为什么 多少 吗 呢 吧""".split(), key=len, reverse=True)
+_LATIN_DROP = set("""internet online web search verify verification verified check checking local information info find
+look lookup please now then and the a an of to in on for with recherche vérification vérifier vérifiée informations
+information locale local en ligne""".split())
+
+
+def clean_query(text: str) -> str:
+    """去掉指令词、问句词和标点，留下要搜的内容；英文词去重（不区分大小写）。"""
+    s = re.sub(r"[，,。.！!？?；;：:、（）()\[\]【】“”\"'《》<>/\\|]+", " ", text or "")
+    for w in _ZH_DROP:
+        s = s.replace(w, " ")
+    out, seen = [], set()
+    for tok in s.split():
+        low = tok.lower()
+        if low in _LATIN_DROP or low in seen:
+            continue
+        seen.add(low)
+        out.append(tok)
+    return " ".join(out)[:120]
+
+
+def _entity(kw: str) -> str:
+    """关键词里的主体（第一个词；第二个词带数字时一起，如“Ascend 960”）。"""
+    toks = kw.split()
+    if not toks:
+        return ""
+    return " ".join(toks[:2]) if len(toks) > 1 and re.search(r"\d", toks[1]) else toks[0]
+
+
+def web_queries(question: str, keywords: dict, aspects: list[str], lang: str, online: bool) -> list[str]:
+    """深度分析的联网搜索词：关键词（按回答语言；中文回答再加一条英文）+（在线模型）前两个方面。
+    方面里没有主体词时才在前面补上（避免“Ascend Ascend 960 …”这类重复）。"""
+    main = clean_query(keywords.get("zh" if lang == "zh" else "en") or "") or clean_query(question)
+    out = [main] if main else []
+    if online:
+        en = clean_query(keywords.get("en") or "")
+        if lang == "zh" and en:
+            out.append(en)
+        ent = _entity(main)
+        for a in aspects[:2]:
+            a = clean_query(a)
+            if not a or a == clean_query(question):
+                continue
+            out.append(a if not ent or ent.lower() in a.lower() else f"{ent} {a}")
+    seen, uniq = set(), []
+    for q in out:
+        if q.lower() not in seen:
+            seen.add(q.lower())
+            uniq.append(q)
+    return uniq[:4] if online else uniq[:1]
+
+
 def interleave(*groups):
     """轮流取各组的第 1、第 2……个，去重（按 chunk_id）。"""
     out, seen = [], set()

@@ -1,13 +1,17 @@
-"""界面“模型”页的桥接方法（混入 Bridge）：在线模型增删改测、本机模型、向量模型更换、离线模式。"""
+"""界面“模型”页的桥接方法（混入 Bridge）：在线模型增删改测、本机模型、向量模型更换、离线模式、编辑配置文件。"""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import yaml
 
 from lkos.errors import LkosError, ModelUnavailableError
 from lkos.logs import get_logger
-from lkos.models_config import (CUSTOM_GUIDE, PRESET_GROUPS, PRESETS, default_models, display_name, load_models, model_choices,
-                                new_id, normalize_online, public, save_models)
+from lkos.models_config import (ADVANCED_KEYS, CUSTOM_GUIDE, PRESET_GROUPS, PRESETS, MODELS_VERSION, ModelsFileError,
+                                default_models, display_name, load_models, load_models_checked, model_choices,
+                                models_path, new_id, normalize_online, parse_models, public, save_models)
 
 log = get_logger("ui")
 
@@ -17,8 +21,11 @@ class ModelsMixin:
 
     # ---------- 读取 ----------
     def _models(self) -> dict:
-        """当前的模型配置；还没有 models.json 时按当前生效的配置生成一份（不写盘）。"""
-        mc = load_models(self._app.home)
+        """当前的模型配置；还没有 models.json 时按当前生效的配置生成一份（不写盘）。
+        文件有错时抛 LkosError：界面上的保存都会被拒绝，免得用默认值覆盖掉原文件（连同密钥）。"""
+        mc, err = load_models_checked(self._app.home)
+        if err:
+            raise LkosError(f"模型配置文件有错误，请先在“编辑配置文件”里修正：{err}")
         if mc is not None:
             return mc
         mc = default_models()
@@ -40,7 +47,11 @@ class ModelsMixin:
             self._reload_app()
 
     def models(self) -> dict:
-        mc = self._models()
+        _, file_error = load_models_checked(self._app.home)
+        try:
+            mc = self._models()
+        except LkosError:
+            mc = default_models()             # 只用于显示；保存会被拒绝
         local = {"ok": False, "models": [], "message": ""}
         try:
             local["models"] = self._call(lambda: self._app.gateway.provider("local").list_models())
@@ -50,7 +61,8 @@ class ModelsMixin:
         presets = [{**p, "group": p.get("group", "vendor")} for p in PRESETS]
         return {"config": public(mc), "presets": presets, "groups": PRESET_GROUPS, "guide": CUSTOM_GUIDE, "local": local,
                 "choices": self.model_choices(), "embedding_in_use": self._app.cfg.embedding.ref,
-                "embedding_dim": self._app.cfg.embedding.dim}
+                "embedding_dim": self._app.cfg.embedding.dim, "file_error": file_error,
+                "file_path": str(models_path(self._app.home))}
 
     def model_choices(self) -> list[dict]:
         return model_choices(load_models(self._app.home), self._app.cfg)
@@ -60,19 +72,27 @@ class ModelsMixin:
 
     # ---------- 在线模型 ----------
     def _merge_entry(self, entry: dict, mc: dict) -> dict:
-        """界面传来的配置：没填密钥时沿用已保存的。"""
+        """界面传来的配置：没填密钥时沿用已保存的；界面上没有的高级参数和其他字段从已保存的配置里保留。"""
         entry = dict(entry or {})
         old = next((m for m in mc["online"] if m["id"] == entry.get("id")), None)
-        if old and not entry.get("api_key"):
-            entry["api_key"] = old["api_key"]
+        if old:
+            entry = {**{k: v for k, v in old.items() if k not in entry}, **entry}
+            if not entry.get("api_key"):
+                entry["api_key"] = old["api_key"]
         return normalize_online(entry)
 
     def save_online(self, entry: dict) -> dict:
-        mc = self._models()
+        try:
+            mc = self._models()
+        except LkosError as e:
+            return {"error": str(e)}
         if not (entry or {}).get("id"):
             entry = {**(entry or {}), "id": new_id(entry.get("name") or entry.get("model") or "model",
                                                    {m["id"] for m in mc["online"]})}
-        m = self._merge_entry(entry, mc)
+        try:
+            m = self._merge_entry(entry, mc)
+        except (TypeError, ValueError) as e:
+            return {"error": str(e)}
         for key, label in (("base_url", "API 地址"), ("model", "模型名"), ("api_key", "API 密钥")):
             if not m[key]:
                 return {"error": f"请填写{label}"}
@@ -83,7 +103,10 @@ class ModelsMixin:
         return {"ok": True, "id": m["id"], **self.models()}
 
     def delete_online(self, model_id: str) -> dict:
-        mc = self._models()
+        try:
+            mc = self._models()
+        except LkosError as e:
+            return {"error": str(e)}
         mc["online"] = [x for x in mc["online"] if x["id"] != model_id]
         (mc.get("consent") or {}).pop(model_id, None)
         self._save_models(mc)
@@ -91,11 +114,20 @@ class ModelsMixin:
         return {"ok": True, **self.models()}
 
     def _provider_for(self, entry: dict):
-        from lkos.gateway.online import AnthropicProvider, OpenAICompatProvider
+        """测试连接、获取模型列表：和网关用同一套参数建 provider（含高级参数）。"""
+        from lkos.gateway.online import online_provider
 
-        m = self._merge_entry(entry, self._models())
-        cls = AnthropicProvider if m["format"] == "anthropic" else OpenAICompatProvider
-        return cls(f"test-{m['id']}", base_url=m["base_url"], api_key=m["api_key"], timeout_s=30), m
+        try:
+            mc = self._models()
+        except LkosError:
+            mc = default_models()
+        try:
+            m = self._merge_entry(entry, mc)
+        except (TypeError, ValueError) as e:
+            raise LkosError(str(e)) from e
+        opts = {**{k: m[k] for k in ADVANCED_KEYS if k in m}, "base_url": m["base_url"], "api_key": m["api_key"],
+                "timeout_s": 30}
+        return online_provider(f"test-{m['id']}", m["format"], opts), m
 
     def test_online(self, entry: dict) -> dict:
         """用一句很短的话测试连接（会产生极少量费用）。"""
@@ -113,18 +145,24 @@ class ModelsMixin:
         try:
             prov, _ = self._provider_for(entry)
             return {"models": prov.list_models()}
-        except ModelUnavailableError as e:
+        except (ModelUnavailableError, LkosError) as e:
             return {"error": str(e)}
 
     def consent_online(self, model_id: str) -> dict:
         """第一次用某个在线模型前，用户确认过“资料片段会发送到云端”。"""
-        mc = self._models()
+        try:
+            mc = self._models()
+        except LkosError as e:
+            return {"error": str(e)}
         mc.setdefault("consent", {})[model_id] = True
         self._save_models(mc, reload=False)
         return {"ok": True}
 
     def set_offline(self, on: bool) -> dict:
-        mc = self._models()
+        try:
+            mc = self._models()
+        except LkosError as e:
+            return {"error": str(e)}
         mc["offline_mode"] = bool(on)
         self._save_models(mc)
         log.info("离线模式已%s", "开启：不能使用在线模型" if on else "关闭")
@@ -133,7 +171,10 @@ class ModelsMixin:
     # ---------- 本机模型 ----------
     def set_local(self, chat: str | None = None, context_window: int | None = None,
                   base_url: str | None = None) -> dict:
-        mc = self._models()
+        try:
+            mc = self._models()
+        except LkosError as e:
+            return {"error": str(e)}
         if chat:
             mc["local"]["chat"] = str(chat).strip()
         if context_window:
@@ -162,7 +203,10 @@ class ModelsMixin:
 
     def apply_embedding(self, model: str, dim: int, source_ids: list[int], when: str = "idle") -> dict:
         """换向量模型：清空旧索引（问答记录保留），只保留勾选的文件夹，按 when（now / idle）重新索引。"""
-        mc = self._models()
+        try:
+            mc = self._models()
+        except LkosError as e:
+            return {"error": str(e)}
         ref = f"local/{model}"
         if ref == self._app.cfg.embedding.ref and int(dim) == self._app.cfg.embedding.dim:
             return {"error": "和当前的向量模型一样，不需要更换"}
@@ -184,3 +228,88 @@ class ModelsMixin:
                  "现在开始" if when == "now" else "闲时自动")
         self._emit({"type": "library_changed"})
         return {"ok": True, "folders": len(paths), **self.models()}
+
+    # ---------- 编辑配置文件（JSON / YAML） ----------
+    def models_file(self, fmt: str = "json") -> dict:
+        """配置文件全文，给界面里的编辑器。文件有错时原样返回内容和错误（让用户就地修改）。
+        fmt：json / yaml（YAML 只是换个写法显示和编辑，保存时仍写成 models.json）。"""
+        p = models_path(self._app.home)
+        mc, err = load_models_checked(self._app.home)
+        if err:
+            try:
+                text = p.read_text("utf-8")
+            except OSError:
+                text = ""
+            return {"text": text, "format": "json", "error": err, "path": str(p), "help": ADVANCED_KEYS}
+        if mc is None:
+            mc = self._models()
+        data = {"version": MODELS_VERSION, **mc}
+        if fmt == "yaml":
+            text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        else:
+            text = json.dumps(data, ensure_ascii=False, indent=2)
+        return {"text": text, "format": fmt, "error": None, "path": str(p), "help": ADVANCED_KEYS}
+
+    def check_models_text(self, text: str, fmt: str = "json") -> dict:
+        """只检查不保存：返回错误说明（带行号）或在线模型数量。"""
+        try:
+            mc = _parse_text(text, fmt)
+        except ModelsFileError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "online": len(mc["online"]), "names": [m["name"] for m in mc["online"]]}
+
+    def save_models_text(self, text: str, fmt: str = "json") -> dict:
+        """检查通过才保存（写成 models.json），保存后马上生效。"""
+        try:
+            mc = _parse_text(text, fmt)
+        except ModelsFileError as e:
+            return {"error": str(e)}
+        save_models(self._app.home, mc)
+        self._reload_app()
+        log.info("已保存模型配置文件（%s 格式编辑）：%d 个在线模型", fmt.upper(), len(mc["online"]))
+        return {"ok": True, **self.models()}
+
+    def reload_models_file(self) -> dict:
+        """在别的编辑器里改完 models.json 后：重新读取并生效（文件有错时不生效，返回错误）。"""
+        _, err = load_models_checked(self._app.home)
+        if err:
+            return {"error": err, **self.models()}
+        self._reload_app()
+        log.info("已重新读取模型配置文件")
+        return {"ok": True, **self.models()}
+
+    def open_models_file(self) -> dict:
+        """用系统的文本编辑器打开 models.json（没有文件时先按当前配置生成一份）。"""
+        import subprocess
+        import sys
+
+        p = models_path(self._app.home)
+        if not p.exists():
+            save_models(self._app.home, self._models())
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", "-t", str(p)])
+            else:
+                subprocess.Popen(["xdg-open", str(p)])
+        except OSError as e:
+            return {"error": f"无法打开：{e}"}
+        return {"ok": True, "path": str(p)}
+
+
+def _parse_text(text: str, fmt: str) -> dict:
+    """编辑器里的文字 → 规范化的配置；格式或内容有错时抛 ModelsFileError（写明行号 / 哪一项）。"""
+    text = text or ""
+    if fmt == "yaml":
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            mark = getattr(e, "problem_mark", None)
+            where = f"第 {mark.line + 1} 行第 {mark.column + 1} 列" if mark else ""
+            raise ModelsFileError(f"YAML 格式有错{where}：{getattr(e, 'problem', None) or e}") from e
+    else:
+        try:
+            data = json.loads(text)
+        except ValueError as e:
+            raise ModelsFileError(f"JSON 格式有错（第 {getattr(e, 'lineno', '?')} 行第 {getattr(e, 'colno', '?')} 列）："
+                                  f"{getattr(e, 'msg', e)}") from e
+    return parse_models(data)

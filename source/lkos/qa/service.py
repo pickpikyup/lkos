@@ -5,16 +5,14 @@ from __future__ import annotations
 import re
 
 from lkos.config import Config
-from lkos.errors import ModelUnavailableError
 from lkos.gateway.base import TokenCallback
-from lkos.gateway.gateway import out_of_budget_message
 from lkos.indexing.language import detect_lang
 from lkos.qa.citations import validate_citations
 from lkos.qa.history import Turn, history_messages, messages_tokens, prior_chunks
 from lkos.qa.prompt import LABELS, NO_CONTEXT_MESSAGE, build_messages, fit_context, format_source, lang_key
 from lkos.retrieval.select import merge_adjacent
 from lkos.types import Answer, RetrievedChunk
-from lkos.web.search import interleave
+from lkos.web.search import clean_query, interleave
 
 TASK = "knowledge_qa"
 _LATIN_WORD = re.compile(r"[A-Za-zÀ-ÿ]{2,}")
@@ -51,10 +49,10 @@ CHAT_WEB_NOTE = {
 
 
 def web_query(question: str, turns) -> str:
-    """联网搜索用的查询：一般就是问题本身；“那第二点呢”这类很短的追问带上上一轮的问题。"""
-    q = question.strip()
-    if turns and len(q) < 12:
-        q = f"{turns[-1].question} {q}"
+    """联网搜索用的查询：问题去掉指令词（查找、核实、联网……）和问句词；“那第二点呢”这类很短的追问带上上一轮的问题。"""
+    q = clean_query(question) or question.strip()
+    if turns and len(q) < 8:
+        q = f"{clean_query(turns[-1].question)} {q}".strip()
     return q[:200]
 
 
@@ -96,7 +94,7 @@ class QAService:
         online = self.is_online(ref)
         mcfg = self.cfg.chat_model(ref)
         turns = [t if isinstance(t, Turn) else Turn(question=t[0], answer=t[1]) for t in (history or [])]
-        max_out = (mcfg.max_output or CHAT_MAX_TOKENS) if online else CHAT_MAX_TOKENS
+        max_out = mcfg.output_reserve() if online else CHAT_MAX_TOKENS
         hist = history_messages(turns, online, mcfg.context_window - max_out, chat=True)
         lang = answer_lang(question, self.cfg)
         system = CHAT_SYSTEM.get(lang, CHAT_SYSTEM["en"])
@@ -121,8 +119,7 @@ class QAService:
         else:
             with self.marker.active():
                 result, _ = self.gateway.chat(TASK, messages, **kw)
-        if result.out_of_budget:
-            raise ModelUnavailableError(out_of_budget_message(result, max_out))
+        self.gateway.ensure_answer(result, ref)
         text, citations, invalid = (validate_citations(result.text, context) if context
                                     else (result.text.strip(), [], []))
         return Answer(text=text.strip(), citations=citations, invalid_refs=invalid, no_context=False, context=context,
@@ -143,7 +140,7 @@ class QAService:
         mcfg = self.cfg.chat_model(ref)
         num_ctx = mcfg.context_window
         task = self.cfg.tasks[TASK]
-        max_out = (mcfg.max_output or task.max_tokens) if online else task.max_tokens
+        max_out = mcfg.output_reserve() if online else task.max_tokens
         extra = {}
         if strategy is not None:
             extra["strategy"] = strategy
@@ -175,8 +172,7 @@ class QAService:
         messages = build_messages(question, context, qlang, history=hist)
         result, _ = self.gateway.chat(TASK, messages, model_override=model_override, on_token=on_token,
                                       on_thinking=on_thinking)
-        if result.out_of_budget:
-            raise ModelUnavailableError(out_of_budget_message(result, max_out))
+        self.gateway.ensure_answer(result, ref)
         text, citations, invalid = validate_citations(result.text, context)
         return Answer(
             text=text, citations=citations, invalid_refs=invalid, no_context=False, context=context,

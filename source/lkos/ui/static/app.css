@@ -581,3 +581,17 @@ details.think .think-body { max-height: 260px; overflow: auto; padding: 0 12px 1
 .web-test-msg.bad { color: #b3261e; }
 .generating .web-btn { flex: none; }
 .generating .web-btn span { flex: none; color: inherit; }
+.mcard.mfile textarea.code { width: 100%; min-height: 340px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg); color: var(--ink); font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; tab-size: 2; }
+.mcard.mfile .seg .btn.on { background: var(--bg); color: var(--ink); font-weight: 600; }
+.mcard.mfile #models-file-msg.bad { color: #b3261e; }
+.mfile-help { margin-top: 10px; font-size: 13px; }
+.mfile-help summary { cursor: pointer; color: var(--muted); }
+.mfile-help .kv { margin-top: 8px; }
+.mfile-help pre.code { padding: 8px 10px; border-radius: 6px; background: var(--soft); font: 12px/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; }
+.mform .fh.wide { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+.mfile-help .kv .v { font-family: inherit; font-size: 12.5px; word-break: normal; }
+.mrow .md { white-space: normal; overflow: visible; text-overflow: clip; }
+.mrow .mn { white-space: nowrap; }
+.mcard.mfile .mfoot { flex-wrap: wrap; }
+.mcard.mfile #models-file-msg { flex-basis: 100%; }

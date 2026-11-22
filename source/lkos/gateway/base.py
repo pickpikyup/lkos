@@ -12,9 +12,10 @@ ThinkingCallback = Callable[[str], None]   # 推理模型的思考过程（不�
 @dataclass
 class ChatOptions:
     temperature: float = 0.3
-    max_tokens: int = 1024
+    max_tokens: int | None = 1024     # 在线模型为 None 时按服务商默认
     num_ctx: int = 8192
     think: bool = False
+    short: bool = False               # 简短的内部调用（拆方面、关键词、标签）：在线模型可附加 extra_body_short
 
 
 @dataclass

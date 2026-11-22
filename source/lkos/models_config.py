@@ -4,6 +4,9 @@
 - 读取顺序：内置默认 < config.yaml < models.json < 程序传入的覆盖（测试用）。
 - 在线模型有两种接口格式：anthropic（Claude 的 Messages API）与 openai（OpenAI 兼容的 /chat/completions，
   DeepSeek、通义千问、Kimi、智谱、Gemini、OpenRouter 等都支持）。
+- 每个在线模型除了界面上的几项，还可以在“编辑配置文件”里写高级参数（ADVANCED_KEYS），原样传给接口；
+  不认识的字段也原样保留，不会因为在界面上保存而丢失。
+- 文件写错时不当作“没有配置”：记下错误、界面提示去修正，期间界面上的保存一律拒绝，免得覆盖掉原文件。
 """
 
 from __future__ import annotations
@@ -15,6 +18,21 @@ from pathlib import Path
 
 MODELS_FILE = "models.json"
 ONLINE_PREFIX = "on-"
+MODELS_VERSION = 2            # 2：max_tokens 可以留空（= 服务商默认）；旧版本里的 4096 是程序默认值，迁移为留空
+LEGACY_DEFAULT_MAX = 4096
+ANTHROPIC_DEFAULT_MAX = 16000  # Claude 接口必须给 max_tokens：没写时用这个
+ONLINE_RESERVE = 8192          # 输出上限留空时，按这么多给回答预留上下文（最多占上下文的 1/4）
+
+# 在线模型的高级参数（在“编辑配置文件”里写）：
+ADVANCED_KEYS = {
+    "temperature": "数字；写 null 表示不传（有的推理模型不接受温度参数）；不写则用任务默认值",
+    "max_tokens_param": "输出上限的参数名：max_tokens（默认）或 max_completion_tokens（OpenAI 较新的模型）",
+    "extra_body": "对象：合并进每次请求的请求体，例如 {\"reasoning_effort\": \"low\"}",
+    "extra_body_short": "对象：只合并进拆方面、写关键词、生成标签这类简短的内部调用，例如关闭思考 "
+                        "{\"thinking\": {\"type\": \"disabled\"}}；写 {} 表示不加",
+    "headers": "对象：额外的 HTTP 请求头",
+    "timeout_s": "数字：单次请求超时秒数（默认 120）",
+}
 
 # 预置的在线服务（group：vendor 模型厂商 / aggregator 第三方聚合与推理服务）。
 # models 只是填写示例，以“获取模型列表”拿到的为准
@@ -84,8 +102,10 @@ CUSTOM_GUIDE = {
                 "example": "sk-xxxxxxxx"},
     "model": {"label": "模型名", "hint": "服务商文档里的模型 ID；填好地址和密钥后可点“获取模型列表”",
               "example": "deepseek-chat"},
-    "context_window": {"label": "上下文长度（token）", "hint": "决定一次能带多少资料和对话；不清楚就填 32000",
+    "context_window": {"label": "上下文长度（token）", "hint": "一次最多能输入多少（资料 + 对话）；不清楚就填 32000",
                        "example": "64000"},
+    "max_tokens": {"label": "输出上限（token）", "hint": "一次最多输出多少，推理模型的思考也算在内；留空 = 按服务商默认（推荐）",
+                   "example": "留空"},
 }
 
 DEFAULT_LOCAL = {"base_url": "http://127.0.0.1:11434", "chat": "qwen3:4b-instruct", "context_window": 4096}
@@ -101,27 +121,73 @@ def models_path(home: Path) -> Path:
     return Path(home) / MODELS_FILE
 
 
-def load_models(home: Path) -> dict | None:
-    """没有 models.json 时返回 None（沿用 config.yaml 与内置默认）。"""
-    p = models_path(home)
-    if not p.exists():
-        return None
-    try:
-        data = json.loads(p.read_text("utf-8"))
-    except (OSError, ValueError):
-        return None
+class ModelsFileError(ValueError):
+    """models.json 内容有错（格式不对、字段类型不对）。"""
+
+
+def parse_models(data) -> dict:
+    """已解析的 JSON / YAML 内容 → 规范化的模型配置；有错时抛 ModelsFileError（写明是哪一项）。"""
+    if not isinstance(data, dict):
+        raise ModelsFileError("顶层必须是一个对象（{ ... }）")
+    legacy = int(data.get("version") or 1) < MODELS_VERSION
     out = default_models()
-    out.update({k: v for k, v in data.items() if k in out})
+    out.update({k: v for k, v in data.items() if k in out or k not in ("version",)})
+    for key in ("local", "embedding"):
+        if data.get(key) is not None and not isinstance(data.get(key), dict):
+            raise ModelsFileError(f"{key} 必须是对象")
     out["local"] = {**DEFAULT_LOCAL, **(data.get("local") or {})}
     out["embedding"] = {**DEFAULT_EMBEDDING, **(data.get("embedding") or {})}
-    out["online"] = [normalize_online(m) for m in data.get("online") or [] if isinstance(m, dict)]
+    online = data.get("online") or []
+    if not isinstance(online, list):
+        raise ModelsFileError("online 必须是列表（[ ... ]）")
+    items, seen = [], set()
+    for i, m in enumerate(online, start=1):
+        if not isinstance(m, dict):
+            raise ModelsFileError(f"online 第 {i} 项必须是对象")
+        try:
+            n = normalize_online(m, legacy=legacy)
+        except (TypeError, ValueError) as e:
+            raise ModelsFileError(f"online 第 {i} 项（{m.get('name') or m.get('id') or m.get('model') or '?'}）：{e}") from e
+        if n["id"] in seen:
+            raise ModelsFileError(f"online 第 {i} 项的 id“{n['id']}”和前面的重复")
+        seen.add(n["id"])
+        items.append(n)
+    out["online"] = items
+    if not isinstance(out.get("consent") or {}, dict):
+        raise ModelsFileError("consent 必须是对象")
+    out["offline_mode"] = bool(out.get("offline_mode"))
     return out
+
+
+def load_models_checked(home: Path) -> tuple[dict | None, str | None]:
+    """返回 (配置, 错误)。没有 models.json：(None, None)；文件有错：(None, 错误说明)。"""
+    p = models_path(home)
+    if not p.exists():
+        return None, None
+    try:
+        text = p.read_text("utf-8")
+    except OSError as e:
+        return None, f"读不了 {p.name}：{e}"
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        return None, f"{p.name} 不是有效的 JSON（第 {getattr(e, 'lineno', '?')} 行第 {getattr(e, 'colno', '?')} 列）：{getattr(e, 'msg', e)}"
+    try:
+        return parse_models(data), None
+    except ModelsFileError as e:
+        return None, f"{p.name}：{e}"
+
+
+def load_models(home: Path) -> dict | None:
+    """没有 models.json、或文件有错时返回 None（沿用 config.yaml 与内置默认；错误用 load_models_checked 取）。"""
+    return load_models_checked(home)[0]
 
 
 def save_models(home: Path, data: dict) -> None:
     p = models_path(home)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
+    data = {"version": MODELS_VERSION, **{k: v for k, v in data.items() if k != "version"}}
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
     try:
         tmp.chmod(0o600)          # 只有自己能读
@@ -138,8 +204,62 @@ def new_id(name: str, taken: set[str]) -> str:
     return cid
 
 
-def normalize_online(m: dict) -> dict:
+def _opt_int(v, name: str, low: int = 1) -> int | None:
+    """空 / null / 0 → None；否则必须是 ≥ low 的整数。"""
+    if v in (None, "", 0, "0"):
+        return None
+    if isinstance(v, bool):
+        raise ValueError(f"{name} 必须是整数")
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} 必须是整数，现在是 {v!r}") from None
+    if n < low:
+        raise ValueError(f"{name} 不能小于 {low}")
+    return n
+
+
+def _check_advanced(m: dict) -> dict:
+    out = {}
+    for key in ("extra_body", "extra_body_short", "headers"):
+        if key in m and m[key] is not None:
+            if not isinstance(m[key], dict):
+                raise ValueError(f"{key} 必须是对象（{{ ... }}）")
+            out[key] = m[key]
+    if "headers" in out and not all(isinstance(v, str) for v in out["headers"].values()):
+        raise ValueError("headers 里的值必须是字符串")
+    if "temperature" in m:
+        t = m["temperature"]
+        if t is not None and (isinstance(t, bool) or not isinstance(t, (int, float))):
+            raise ValueError("temperature 必须是数字或 null")
+        out["temperature"] = t
+    if "max_tokens_param" in m and m["max_tokens_param"] is not None:
+        if m["max_tokens_param"] not in ("max_tokens", "max_completion_tokens"):
+            raise ValueError("max_tokens_param 只能是 max_tokens 或 max_completion_tokens")
+        out["max_tokens_param"] = m["max_tokens_param"]
+    if m.get("timeout_s") is not None:
+        out["timeout_s"] = _opt_int(m["timeout_s"], "timeout_s", 5)
+    return out
+
+
+BASIC_KEYS = ("id", "preset", "name", "format", "base_url", "web", "api_key", "model", "context_window", "max_tokens",
+              "enabled", "added_at")
+
+
+def normalize_online(m: dict, legacy: bool = False) -> dict:
+    """规范化一个在线模型。max_tokens 为 None 表示按服务商默认；高级参数检查类型后保留；不认识的字段原样保留。
+    legacy：旧版本文件——当时界面上没有“输出上限”，4096 都是程序默认值，迁移为 None。"""
     fmt = m.get("format") if m.get("format") in ("anthropic", "openai") else "openai"
+    max_tokens = _opt_int(m.get("max_tokens"), "max_tokens（输出上限）", 16)
+    if legacy and max_tokens == LEGACY_DEFAULT_MAX:
+        max_tokens = None
+    extra = {k: v for k, v in m.items() if k not in BASIC_KEYS and k not in ADVANCED_KEYS}   # 不认识的字段：原样保留
+    adv = _check_advanced(m)
+    preset = str(m.get("preset") or "custom")
+    # DeepSeek 默认开思考：简短的内部调用（拆方面、关键词、标签）关掉思考，又快又不会被思考占满输出
+    # （DeepSeek 文档：thinking: {"type": "enabled/disabled"}）。写了 extra_body_short（哪怕是 {}）就不动
+    if preset == "deepseek" and "extra_body_short" not in m:
+        adv["extra_body_short"] = {"thinking": {"type": "disabled"}}
     return {
         "id": str(m.get("id") or new_id(str(m.get("name") or m.get("model") or "model"), set())),
         "preset": str(m.get("preset") or "custom"),
@@ -149,10 +269,12 @@ def normalize_online(m: dict) -> dict:
         "web": str(m.get("web") or "").strip(),
         "api_key": str(m.get("api_key") or "").strip(),
         "model": str(m.get("model") or "").strip(),
-        "context_window": max(2048, int(m.get("context_window") or 32000)),
-        "max_tokens": max(256, int(m.get("max_tokens") or 4096)),
+        "context_window": max(2048, _opt_int(m.get("context_window"), "context_window（上下文长度）") or 32000),
+        "max_tokens": max_tokens,
         "enabled": bool(m.get("enabled", True)),
         "added_at": m.get("added_at") or time.strftime("%Y-%m-%d"),
+        **adv,
+        **extra,
     }
 
 
@@ -178,7 +300,8 @@ def to_overrides(mc: dict) -> dict:
     online = [m for m in mc["online"] if m["enabled"] and m["model"] and m["base_url"]]
     for m in online:
         pname = f"{ONLINE_PREFIX}{m['id']}"
-        over["providers"][pname] = {"type": m["format"], "base_url": m["base_url"], "api_key": m["api_key"]}
+        over["providers"][pname] = {"type": m["format"], "base_url": m["base_url"], "api_key": m["api_key"],
+                                    **{k: m[k] for k in ADVANCED_KEYS if k in m}}
         over["models"]["chat"][online_ref(m)] = {"context_window": m["context_window"], "think": False,
                                                  "max_output": m["max_tokens"]}
     over["privacy"] = {"remote_enabled": bool(online) and not mc.get("offline_mode"),
