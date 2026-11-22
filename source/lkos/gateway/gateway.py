@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import inspect
 import time
 from typing import Callable, Protocol
 
@@ -17,7 +18,7 @@ import psutil
 from lkos.logs import get_logger
 from lkos.config import Config, ProviderConfig, split_model_ref
 from lkos.errors import ConfigError, EmbeddingMismatchError, LkosError, ModelUnavailableError, RemoteDisabledError
-from lkos.gateway.base import ChatOptions, ChatResult, TokenCallback
+from lkos.gateway.base import ChatOptions, ChatResult, ThinkingCallback, TokenCallback
 from lkos.types import CallLog
 
 
@@ -62,6 +63,23 @@ def build_provider(pc: ProviderConfig, embedding_dim: int, transport=None):
     raise ConfigError(f"不支持的 provider 类型：{pc.type}")
 
 
+def _accepts(fn, name: str) -> bool:
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is p.VAR_KEYWORD for p in params.values())
+
+
+def out_of_budget_message(result: ChatResult, max_tokens: int | None = None) -> str:
+    """输出额度用完、没写出正文时给用户看的说明。"""
+    t = len(getattr(result, "thinking", "") or "")
+    lim = f"（{max_tokens} tokens）" if max_tokens else ""
+    why = f"都用在了思考上（思考了 {t} 字）" if t else "用完了"
+    return (f"模型的输出额度{lim}{why}，没有写出回答。可以在左栏“模型”里调大这个模型的“输出上限”后重试，"
+            "或换一个不带思考的模型。")
+
+
 class ModelGateway:
     def __init__(self, cfg: Config, logger: CallLogger | None = None, providers: dict | None = None,
                  snapshot: Callable[[], tuple[int | None, int | None]] = memory_snapshot):
@@ -100,8 +118,9 @@ class ModelGateway:
     # ---------- chat ----------
     def chat(self, task: str, messages: list[dict], model_override: str | None = None,
              on_token: TokenCallback | None = None, max_tokens: int | None = None,
-             log_as: str | None = None) -> tuple[ChatResult, str]:
-        """返回 (结果, 实际使用的模型引用)。max_tokens：覆盖任务配置的输出上限；log_as：调用日志里的任务名。"""
+             log_as: str | None = None, on_thinking: ThinkingCallback | None = None) -> tuple[ChatResult, str]:
+        """返回 (结果, 实际使用的模型引用)。max_tokens：覆盖任务配置的输出上限；log_as：调用日志里的任务名；
+        on_thinking：推理模型的思考过程（provider 支持时才传）。"""
         ref = self.resolve(task, model_override)
         pname, model = split_model_ref(ref)
         self._check_privacy(pname)
@@ -116,13 +135,21 @@ class ModelGateway:
         )
         task = log_as or task
         try:
-            result = provider.chat(model, messages, opts, on_token=on_token)
+            kw = {"on_thinking": on_thinking} if on_thinking and _accepts(provider.chat, "on_thinking") else {}
+            result = provider.chat(model, messages, opts, on_token=on_token, **kw)
         except LkosError as e:
             self._log(task, pname, model, error=str(e))
             raise
         except Exception as e:  # noqa: BLE001
             self._log(task, pname, model, error=f"{type(e).__name__}: {e}")
             raise ModelUnavailableError(f"调用 {ref} 失败：{e}") from e
+        thinking = getattr(result, "thinking", "") or ""
+        finish = getattr(result, "finish_reason", None)
+        if thinking or finish not in (None, "stop"):
+            _rlog.debug("模型 %s/%s（%s）：思考 %d 字、结束原因 %s", pname, model, task, len(thinking), finish or "-")
+        if not (result.text or "").strip() and finish == "length":
+            _rlog.warning("模型 %s/%s（%s）的输出额度（%d tokens）用完了，没有写出正文%s", pname, model, task,
+                          opts.max_tokens, f"（额度都花在了 {len(thinking)} 字的思考上）" if thinking else "")
         self._log(task, pname, model, latency_ms=result.latency_ms, ttft_ms=result.ttft_ms,
                   input_tokens=result.input_tokens, output_tokens=result.output_tokens)
         return result, ref

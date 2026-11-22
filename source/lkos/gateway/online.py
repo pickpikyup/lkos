@@ -56,10 +56,10 @@ class _Online:
         if not self.api_key:
             raise ModelUnavailableError("没有填写 API 密钥")
 
-    def _sse(self, url: str, headers: dict, payload: dict, model: str, handle, on_token) -> ChatResult:
+    def _sse(self, url: str, headers: dict, payload: dict, model: str, handle, on_token, on_thinking=None) -> ChatResult:
         self._need_key()
         start = time.perf_counter()
-        state = {"parts": [], "ttft": None, "in": None, "out": None}
+        state = {"parts": [], "thinking": [], "ttft": None, "in": None, "out": None, "finish": None}
 
         def emit(text: str) -> None:
             if not text:
@@ -69,6 +69,16 @@ class _Online:
             state["parts"].append(text)
             if on_token:
                 on_token(text)
+
+        def think(text: str) -> None:
+            """推理模型的思考过程：单独收集、单独推给界面，不混进回答正文。"""
+            if not text:
+                return
+            state["thinking"].append(text)
+            if on_thinking:
+                on_thinking(text)
+
+        emit.think = think
 
         try:
             with self.client.stream("POST", url, headers=headers, json=payload) as resp:
@@ -91,7 +101,8 @@ class _Online:
         except Exception as e:  # noqa: BLE001 - 网络与 HTTP 异常
             raise self._wrap(model, e) from e
         return ChatResult(text="".join(state["parts"]), input_tokens=state["in"], output_tokens=state["out"],
-                          ttft_ms=state["ttft"], latency_ms=int((time.perf_counter() - start) * 1000))
+                          ttft_ms=state["ttft"], latency_ms=int((time.perf_counter() - start) * 1000),
+                          thinking="".join(state["thinking"]), finish_reason=state["finish"])
 
     def check_model(self, model: str) -> ModelCheck:
         try:
@@ -126,7 +137,7 @@ class AnthropicProvider(_Online):
         return f"{base}{path}" if base.endswith("/v1") else f"{base}/v1{path}"
 
     def chat(self, model: str, messages: list[dict], opts: ChatOptions,
-             on_token: TokenCallback | None = None) -> ChatResult:
+             on_token: TokenCallback | None = None, on_thinking=None) -> ChatResult:
         system = "\n\n".join(m["content"] for m in messages if m["role"] == "system")
         msgs = [{"role": m["role"], "content": m["content"]} for m in messages if m["role"] != "system"]
         payload = {"model": model, "max_tokens": opts.max_tokens, "temperature": opts.temperature,
@@ -137,15 +148,22 @@ class AnthropicProvider(_Online):
         def handle(ev: dict, emit, state) -> None:
             t = ev.get("type")
             if t == "content_block_delta":
-                emit((ev.get("delta") or {}).get("text") or "")
+                delta = ev.get("delta") or {}
+                if delta.get("type") == "thinking_delta":
+                    emit.think(delta.get("thinking") or "")
+                else:
+                    emit(delta.get("text") or "")
             elif t == "message_start":
                 state["in"] = ((ev.get("message") or {}).get("usage") or {}).get("input_tokens")
             elif t == "message_delta":
                 state["out"] = (ev.get("usage") or {}).get("output_tokens", state["out"])
+                stop = (ev.get("delta") or {}).get("stop_reason")
+                if stop:
+                    state["finish"] = "length" if stop == "max_tokens" else ("stop" if stop == "end_turn" else stop)
             elif t == "error":
                 raise ModelUnavailableError(f"Claude 返回错误：{(ev.get('error') or {}).get('message') or ev}")
 
-        return self._sse(self._url("/messages"), self._headers(), payload, model, handle, on_token)
+        return self._sse(self._url("/messages"), self._headers(), payload, model, handle, on_token, on_thinking)
 
     def list_models(self) -> list[str]:
         self._need_key()
@@ -164,7 +182,7 @@ class OpenAICompatProvider(_Online):
         return {"Authorization": f"Bearer {self.api_key}", "content-type": "application/json"}
 
     def chat(self, model: str, messages: list[dict], opts: ChatOptions,
-             on_token: TokenCallback | None = None) -> ChatResult:
+             on_token: TokenCallback | None = None, on_thinking=None) -> ChatResult:
         payload = {"model": model, "messages": messages, "stream": True, "temperature": opts.temperature,
                    "max_tokens": opts.max_tokens}
 
@@ -172,13 +190,21 @@ class OpenAICompatProvider(_Online):
             if ev.get("error"):
                 raise ModelUnavailableError(f"在线模型返回错误：{_error_message(json.dumps(ev))}")
             for ch in ev.get("choices") or []:
-                emit((ch.get("delta") or {}).get("content") or "")
+                delta = ch.get("delta") or {}
+                # 推理模型（DeepSeek、Qwen、Kimi 等）把思考放在 reasoning_content，OpenRouter 等用 reasoning
+                thought = delta.get("reasoning_content") or delta.get("reasoning")
+                if isinstance(thought, str):
+                    emit.think(thought)
+                emit(delta.get("content") or "")
+                if ch.get("finish_reason"):
+                    state["finish"] = ch["finish_reason"]
             usage = ev.get("usage") or {}
             if usage:
                 state["in"] = usage.get("prompt_tokens", state["in"])
                 state["out"] = usage.get("completion_tokens", state["out"])
 
-        return self._sse(f"{self.base_url}/chat/completions", self._headers(), payload, model, handle, on_token)
+        return self._sse(f"{self.base_url}/chat/completions", self._headers(), payload, model, handle, on_token,
+                         on_thinking)
 
     def list_models(self) -> list[str]:
         self._need_key()

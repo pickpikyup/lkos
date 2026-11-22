@@ -18,7 +18,7 @@ class HermesProvider:
         self.base_url = base_url
 
     def chat(self, model: str, messages: list[dict], opts: ChatOptions,
-             on_token: TokenCallback | None = None) -> ChatResult:
+             on_token: TokenCallback | None = None, on_thinking=None) -> ChatResult:
         raise ModelUnavailableError("Hermes Proxy 在 POC 中尚未实现。")
 
     def embed(self, model: str, texts: list[str]) -> list[list[float]]:

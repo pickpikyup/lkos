@@ -51,7 +51,7 @@ class FakeProvider:
 
     # ---------- chat ----------
     def chat(self, model: str, messages: list[dict], opts: ChatOptions,
-             on_token: TokenCallback | None = None) -> ChatResult:
+             on_token: TokenCallback | None = None, on_thinking=None) -> ChatResult:
         if self.fail:
             raise ModelUnavailableError("FakeProvider 被配置为故障")
         start = time.perf_counter()

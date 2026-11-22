@@ -42,7 +42,7 @@ class OllamaProvider:
 
     # ---------- chat ----------
     def chat(self, model: str, messages: list[dict], opts: ChatOptions,
-             on_token: TokenCallback | None = None) -> ChatResult:
+             on_token: TokenCallback | None = None, on_thinking=None) -> ChatResult:
         payload = {
             "model": model,
             "messages": messages,
@@ -56,18 +56,19 @@ class OllamaProvider:
             },
         }
         try:
-            return self._stream_chat(model, payload, on_token)
+            return self._stream_chat(model, payload, on_token, on_thinking)
         except ModelUnavailableError as e:
             # 不支持思考开关的模型（如纯 Instruct 版本）会拒绝 think 参数：去掉后重试一次
             if "think" in payload and "think" in str(e).lower():
                 payload.pop("think")
-                return self._stream_chat(model, payload, on_token)
+                return self._stream_chat(model, payload, on_token, on_thinking)
             raise
 
-    def _stream_chat(self, model: str, payload: dict, on_token: TokenCallback | None) -> ChatResult:
+    def _stream_chat(self, model: str, payload: dict, on_token: TokenCallback | None, on_thinking=None) -> ChatResult:
         start = time.perf_counter()
         ttft: int | None = None
         parts: list[str] = []
+        thinking: list[str] = []
         final: dict = {}
         try:
             with self.client.stream("POST", "/api/chat", json=payload) as resp:
@@ -80,6 +81,11 @@ class OllamaProvider:
                     data = json.loads(line)
                     if data.get("error"):
                         raise ModelUnavailableError(f"Ollama 报错：{data['error']}")
+                    thought = (data.get("message") or {}).get("thinking") or ""
+                    if thought:          # 开着思考的模型（如 qwen3:4b）先输出思考过程
+                        thinking.append(thought)
+                        if on_thinking:
+                            on_thinking(thought)
                     piece = (data.get("message") or {}).get("content") or ""
                     if piece:
                         if ttft is None:
@@ -102,6 +108,7 @@ class OllamaProvider:
             ttft_ms=ttft,
             latency_ms=int((time.perf_counter() - start) * 1000),
             load_ms=int(load_ns / 1e6) if isinstance(load_ns, (int, float)) else None,
+            thinking="".join(thinking), finish_reason=final.get("done_reason"),
         )
 
     # ---------- embed ----------
