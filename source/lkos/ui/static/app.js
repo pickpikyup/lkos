@@ -382,14 +382,177 @@
     return "";
   }
 
+  /*MD-BEGIN*/
+  // ---------- Markdown 渲染（模型回答） ----------
+  // 先整体转义再排版：模型输出里的 HTML 一律当文字显示，不会被执行。支持：标题、段落（保留换行）、加粗 / 斜体 / 删除线、
+  // 行内代码、代码块、引用、有序 / 无序 / 嵌套列表、任务列表、表格（含对齐）、分隔线、链接与网址；出处编号 [1]、[1, 2] 变成按钮。
+  // 流式输出时每来一段就整体重排：表格在分隔行出现后显示为表格，代码块没收尾时也按代码块显示。
+  const MD = (() => {
+    const escH = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    const RE_FENCE = /^\s{0,3}(`{3,}|~{3,})\s*([\w+#.-]*)\s*$/;
+    const RE_HEAD = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
+    const RE_HR = /^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/;
+    const RE_LIST = /^(\s*)([-*+•]|\d{1,9}[.)、])\s+(.*)$/;
+    const RE_QUOTE = /^\s{0,3}>\s?(.*)$/;
+    const RE_SEP = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/;
+
+    function inline(src, opt) {
+      const ph = [];
+      const keep = (html) => { ph.push(html); return `\u0000${ph.length - 1}\u0000`; };
+      let s = String(src);
+      s = s.replace(/`([^`\n]+)`/g, (_, c) => keep(`<code>${escH(c)}</code>`));
+      s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) => keep(
+        `<button type="button" class="md-link" data-open-url="${escH(u)}" title="${escH(u)}">${escH(t)}</button>`));
+      s = s.replace(/https?:\/\/[^\s<>"'，。；）)\]】]+/g, (u) => keep(
+        `<button type="button" class="md-link" data-open-url="${escH(u)}" title="${escH(u)}">${escH(u)}</button>`));
+      if (opt.cite) s = s.replace(/\[(\d+(?:\s*[,，、]\s*\d+)*)\](?!\()/g, (_, nums) => keep(opt.cite(nums.split(/\s*[,，、]\s*/))));
+      s = escH(s);
+      s = s.replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<strong>$1</strong>");
+      s = s.replace(/__(?=\S)([\s\S]*?\S)__/g, "<strong>$1</strong>");
+      s = s.replace(/(^|[^*\w])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?!\*)/g, "$1<em>$2</em>");
+      s = s.replace(/~~(?=\S)([\s\S]*?\S)~~/g, "<del>$1</del>");
+      return s.replace(/\u0000(\d+)\u0000/g, (_, i) => ph[Number(i)]);
+    }
+
+    function cells(line) {
+      let t = line.trim();
+      if (t.startsWith("|")) t = t.slice(1);
+      if (t.endsWith("|") && !t.endsWith("\\|")) t = t.slice(0, -1);
+      const out = []; let cur = "", code = false;
+      for (let i = 0; i < t.length; i++) {
+        const ch = t[i];
+        if (ch === "`") code = !code;
+        if (ch === "\\" && t[i + 1] === "|") { cur += "|"; i++; continue; }
+        if (ch === "|" && !code) { out.push(cur.trim()); cur = ""; continue; }
+        cur += ch;
+      }
+      out.push(cur.trim());
+      return out;
+    }
+
+    function table(lines, i, opt) {
+      const head = cells(lines[i]);
+      const align = cells(lines[i + 1]).map((c) => (c.startsWith(":") && c.endsWith(":") ? "center" : c.endsWith(":") ? "right" : ""));
+      const rows = [];
+      let j = i + 2;
+      while (j < lines.length) {
+        const l = lines[j];
+        if (!l.trim()) {                       // 行与行之间夹了空行：后面还是表格行就接着读
+          if (j + 1 < lines.length && /^\s*\|/.test(lines[j + 1]) && !RE_SEP.test(lines[j + 1])) { j++; continue; }
+          break;
+        }
+        if (!l.includes("|")) break;
+        rows.push(cells(l)); j++;
+      }
+      const n = head.length;
+      const td = (tag, c, k) => `<${tag}${align[k] ? ` style="text-align:${align[k]}"` : ""}>${inline(c || "", opt)}</${tag}>`;
+      const body = rows.map((r) => `<tr>${Array.from({ length: Math.max(n, r.length) }, (_, k) => td("td", r[k], k)).join("")}</tr>`).join("");
+      return [`<div class="md-table"><table><thead><tr>${head.map((c, k) => td("th", c, k)).join("")}</tr></thead><tbody>${body}</tbody></table></div>`, j];
+    }
+
+    function list(lines, i, opt) {
+      // 收集整个列表块：列表项、缩进的续行；空行后面还是列表项（或缩进内容）就继续
+      const items = [];
+      let j = i;
+      while (j < lines.length) {
+        const l = lines[j];
+        const m = l.match(RE_LIST);
+        if (m && !RE_HR.test(l)) {
+          const ordered = /\d/.test(m[2]);
+          let text = m[3];
+          let task = null;
+          const tm = text.match(/^\[( |x|X)\]\s+(.*)$/);
+          if (tm) { task = tm[1] !== " "; text = tm[2]; }
+          items.push({ indent: m[1].replace(/\t/g, "    ").length, ordered, start: ordered ? parseInt(m[2], 10) : 1, text, task });
+          j++; continue;
+        }
+        if (!l.trim()) {
+          const next = lines[j + 1];
+          if (next !== undefined && (RE_LIST.test(next) || /^\s{2,}\S/.test(next)) && items.length) { j++; continue; }
+          break;
+        }
+        if (/^\s{2,}\S/.test(l) && items.length && !RE_FENCE.test(l)) { items[items.length - 1].text += "\n" + l.trim(); j++; continue; }
+        if (items.length && !RE_HEAD.test(l) && !RE_QUOTE.test(l) && !l.includes("|") && !RE_FENCE.test(l) && !RE_HR.test(l)) {
+          items[items.length - 1].text += "\n" + l.trim(); j++; continue;      // 懒续行
+        }
+        break;
+      }
+      // 按缩进建嵌套
+      let html = "";
+      const stack = [];
+      const open = (it) => { stack.push(it); html += it.ordered ? `<ol${it.start !== 1 ? ` start="${it.start}"` : ""}>` : "<ul>"; };
+      for (const it of items) {
+        while (stack.length && it.indent < stack[stack.length - 1].indent) {
+          const top = stack.pop(); html += top.ordered ? "</li></ol>" : "</li></ul>";
+        }
+        const top = stack[stack.length - 1];
+        if (!top || it.indent > top.indent) open(it);
+        else {
+          if (top.ordered !== it.ordered) {       // 同一层换了类型：另起一个列表
+            stack.pop(); html += top.ordered ? "</li></ol>" : "</li></ul>"; open(it);
+          } else html += "</li>";
+        }
+        const box = it.task === null ? "" : `<span class="md-task${it.task ? " done" : ""}" aria-hidden="true">${it.task ? "☑" : "☐"}</span>`;
+        html += `<li>${box}${it.text.split("\n").map((t) => inline(t, opt)).join("<br>")}`;
+      }
+      while (stack.length) { const top = stack.pop(); html += top.ordered ? "</li></ol>" : "</li></ul>"; }
+      return [html, j];
+    }
+
+    function blocks(text, opt) {
+      const lines = String(text || "").replace(/\r\n?/g, "\n").split("\n");
+      const out = [];
+      let i = 0;
+      while (i < lines.length) {
+        const l = lines[i];
+        if (!l.trim()) { i++; continue; }
+        let m = l.match(RE_FENCE);
+        if (m) {
+          const fence = m[1][0], body = [];
+          i++;
+          while (i < lines.length && !new RegExp(`^\\s{0,3}${fence === "`" ? "`" : "~"}{3,}\\s*$`).test(lines[i])) body.push(lines[i++]);
+          i++;
+          out.push(`<pre class="md-code"${m[2] ? ` data-lang="${escH(m[2])}"` : ""}><code>${escH(body.join("\n"))}</code></pre>`);
+          continue;
+        }
+        if ((m = l.match(RE_HEAD))) { out.push(`<div class="md-h md-h${Math.min(m[1].length, 4)}" role="heading" aria-level="${m[1].length + 2}">${inline(m[2], opt)}</div>`); i++; continue; }
+        if (RE_HR.test(l)) { out.push("<hr>"); i++; continue; }
+        if (l.includes("|") && i + 1 < lines.length && RE_SEP.test(lines[i + 1]) && lines[i + 1].includes("-")) {
+          const [h, j] = table(lines, i, opt); out.push(h); i = j; continue;
+        }
+        if (RE_QUOTE.test(l)) {
+          const q = [];
+          while (i < lines.length && (m = lines[i].match(RE_QUOTE))) { q.push(m[1]); i++; }
+          out.push(`<blockquote>${blocks(q.join("\n"), opt)}</blockquote>`);
+          continue;
+        }
+        if (RE_LIST.test(l) && !RE_HR.test(l)) { const [h, j] = list(lines, i, opt); out.push(h); i = j; continue; }
+        const para = [];
+        while (i < lines.length && lines[i].trim() && !RE_FENCE.test(lines[i]) && !RE_HEAD.test(lines[i]) && !RE_HR.test(lines[i])
+               && !RE_QUOTE.test(lines[i]) && !(RE_LIST.test(lines[i]) && para.length === 0)
+               && !(lines[i].includes("|") && i + 1 < lines.length && RE_SEP.test(lines[i + 1]))) {
+          if (para.length && RE_LIST.test(lines[i])) break;
+          para.push(lines[i]); i++;
+        }
+        if (!para.length) { para.push(lines[i]); i++; }
+        out.push(`<p>${para.map((t) => inline(t, opt)).join("<br>")}</p>`);
+      }
+      return out.join("");
+    }
+
+    return { render: (text, opt = {}) => blocks(text, opt), inline: (t, opt = {}) => inline(t, opt) };
+  })();
+  /*MD-END*/
+
+  const CARET = '<span class="caret" aria-hidden="true"></span>';
   function answerHTML(text, streaming, turn, plain) {
-    let h = esc(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-    h = h.replace(/^#{2,4}\s*(.+)(?:\n|$)/gm, '<span class="ah">$1</span>');
-    if (plain) return h + (streaming ? '<span class="caret" aria-hidden="true"></span>' : "");   // 对话模式没有出处编号
     const on = (n) => String(S.selTurn) === String(turn) && Number(n) === S.sel;
-    h = h.replace(/\[(\d+(?:\s*[,，、]\s*\d+)*)\]/g, (_, nums) =>
-      nums.split(/\s*[,，、]\s*/).map((n) => `<button type="button" class="ref${on(n) ? " on" : ""}" data-ref="${n}" data-turn="${turn}" aria-label="出处 ${n}">${n}</button>`).join(""));
-    return h + (streaming ? '<span class="caret" aria-hidden="true"></span>' : "");
+    const cite = plain ? null : (nums) => nums.map((n) => `<button type="button" class="ref${on(n) ? " on" : ""}" data-ref="${n}" data-turn="${turn}" aria-label="出处 ${n}">${n}</button>`).join("");
+    let h = MD.render(text, { cite });
+    if (streaming) {                 // 光标放在最后一段的末尾
+      h = /<\/(p|li|td|div)>(<\/(ul|ol|tr|tbody|table|div)>)*$/.test(h) ? h.replace(/(<\/(?:p|li|td|div)>)((?:<\/(?:ul|ol|tr|tbody|table|div)>)*)$/, CARET + "$1$2") : h + CARET;
+    }
+    return h;
   }
 
   function foundPills(sources) {
