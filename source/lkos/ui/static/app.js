@@ -106,7 +106,6 @@
     applyDevMode();
     try {
       S.modelRef = localStorage.getItem("lkos.model") || "";
-      S.libFolded = !!localStorage.getItem("lkos.libFolded");
       const m = localStorage.getItem("lkos.mode");
       if (m === "chat" || m === "search" || m === "qa" || m === "analysis") S.mode = m;
     } catch (e) { /* 忽略 */ }
@@ -147,14 +146,6 @@
   const BRANCH_SVG = '<svg class="br" aria-label="分支" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="12.5" r="1.5"/><circle cx="12" cy="6" r="1.5"/><path d="M4 5v6M12 7.5c0 2.5-8 1.5-8 3.5"/></svg>';
   const DEL_SVG = '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.6 8.5h4.8l.6-8.5"/></svg>';
 
-  function shortPath(p) {
-    // /Users/xx/Project/a/b/c → ~/Project/…/b/c
-    let s = String(p || "").replace(/^\/Users\/[^/]+/, "~");
-    const parts = s.split("/");
-    if (parts.length > 4) s = [parts[0], parts[1], "…", ...parts.slice(-2)].join("/");
-    return s;
-  }
-
   function histTitle(h) { return h.question.replace(/^(分析|提取)：/, ""); }
 
   function histRowHTML(h, curTid) {
@@ -190,22 +181,8 @@
       html += `<button type="button" class="side-more" data-hist-more="1">显示更早的 ${list.length - limit} 个</button>`;
     }
     $("history").innerHTML = html;
-    let f = "";
-    for (const s of S.sources) {
-      const name = sourceName(s);
-      const where = s.kind === "apple_notes" ? "Mac 备忘录（导出在 " + s.path + "）" : s.path;
-      f += `<button type="button" class="side-item two${S.view === "lib" ? " active" : ""}" data-lib="1" title="${esc(where)}">
-        ${s.kind === "apple_notes" ? '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="2"/><path d="M5.5 5.5h5M5.5 8h5M5.5 10.5h3"/></svg>' : '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z"/></svg>'}
-        <span class="tt"><span class="t">${esc(name)}</span><span class="p">${esc(s.kind === "apple_notes" ? "备忘录 App" : shortPath(s.path))}</span></span>
-        <span class="n">${fmt(s.files)}</span></button>`;
-    }
-    if (!S.sources.length) f = '<div class="side-empty">还没有添加文件夹</div>';
-    f += `<button type="button" class="side-item" data-lib="1"><span class="t">管理资料库…</span></button>`;
-    $("folders").innerHTML = f;
-    const folded = !!S.libFolded;
-    $("side-lib").classList.toggle("folded", folded);
-    $("lib-fold").setAttribute("aria-expanded", String(!folded));
-    $("lib-count").textContent = folded && S.sources.length ? ` · ${S.sources.length}` : "";
+    const nSrc = (S.sources || []).length;
+    $("lib-count").textContent = nSrc ? String(nSrc) : "";   // 资料库里的文件夹数
   }
 
   let histTimer = null;
@@ -1368,6 +1345,7 @@
     $("view-models").hidden = v !== "models";
     $("btn-settings").classList.toggle("active", v === "settings");
     $("btn-models").classList.toggle("active", v === "models");
+    $("btn-lib").classList.toggle("active", v === "lib");
     if (v === "models") { S.modelEdit = null; renderModels(); }
     $("btn-logs").classList.toggle("active", v === "logs");
     if (v === "lib") { renderLib(); refreshLibrary(); }
@@ -2092,6 +2070,7 @@
     }
   }, true);
   $("model-btn").addEventListener("click", () => openMenu("model"));
+  $("btn-lib").addEventListener("click", () => showView("lib"));
   $("btn-models").addEventListener("click", () => showView("models"));
   $("btn-settings").addEventListener("click", () => showView("settings"));
   $("btn-logs").addEventListener("click", () => showView("logs"));
@@ -2138,14 +2117,8 @@
     return S.sources.length ? showView("lib") : addFolder();
   });
   $("btn-new").addEventListener("click", newQuestion);
-  $("btn-add-side").addEventListener("click", addFolder);
   $("hist-q").addEventListener("input", onHistSearch);
   $("hist-q").addEventListener("keydown", (e) => { if (e.key === "Escape") { e.target.value = ""; onHistSearch(); } });
-  $("lib-fold").addEventListener("click", () => {
-    S.libFolded = !S.libFolded;
-    try { localStorage.setItem("lkos.libFolded", S.libFolded ? "1" : ""); } catch (e) { /* 忽略 */ }
-    renderSide();
-  });
   $("btn-stop").addEventListener("click", () => api("stop"));
   async function openScope() {
     closeMenu(); closePicker();

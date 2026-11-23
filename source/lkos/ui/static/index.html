@@ -13,19 +13,6 @@
       <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
       新对话<span class="kbd">⌘N</span>
     </button>
-    <!-- 资料库固定在上面，不随对话历史滚动；可以折叠，文件夹多时自己滚动 -->
-    <div class="side-lib" id="side-lib">
-      <div class="side-label">
-        <button type="button" class="fold" id="lib-fold" aria-expanded="true" aria-controls="folders">
-          <svg class="chev" aria-hidden="true" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4l2.5 2.5L7.5 4"/></svg>
-          资料库<span class="fold-n" id="lib-count"></span>
-        </button>
-        <button type="button" id="btn-add-side" aria-label="添加文件夹">
-          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
-        </button>
-      </div>
-      <div class="side-folders" id="folders"></div>
-    </div>
     <!-- 对话历史：只有这一块滚动 -->
     <div class="side-hist-head">
       <div class="side-label">对话</div>
@@ -39,14 +26,19 @@
       <div class="h"><span class="dot" aria-hidden="true"></span><span id="status-h">正在启动…</span></div>
       <div class="d" id="status-d"></div>
     </button>
+    <!-- 底部导航：资料库、模型、日志（开发者模式）、设置 -->
     <div class="side-foot">
-      <button type="button" class="side-item" id="btn-logs" hidden>
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M5 6l2 2-2 2M8.5 10.5H11"/></svg>
-        <span class="t">日志</span><span class="n" id="logs-badge"></span>
+      <button type="button" class="side-item" id="btn-lib">
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2 4.5h4l1.5 1.5H14v6.5H2z"/></svg>
+        <span class="t">资料库</span><span class="n" id="lib-count"></span>
       </button>
       <button type="button" class="side-item" id="btn-models">
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M8 1.8l5.4 3.1v6.2L8 14.2l-5.4-3.1V4.9z"/><path d="M2.6 4.9L8 8l5.4-3.1M8 8v6.2"/></svg>
         <span class="t">模型</span>
+      </button>
+      <button type="button" class="side-item" id="btn-logs" hidden>
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M5 6l2 2-2 2M8.5 10.5H11"/></svg>
+        <span class="t">日志</span><span class="n" id="logs-badge"></span>
       </button>
       <button type="button" class="side-item" id="btn-settings">
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"/></svg>

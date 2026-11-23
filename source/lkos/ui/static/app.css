@@ -596,17 +596,8 @@ details.think .think-body { max-height: 260px; overflow: auto; padding: 0 12px 1
 .mcard.mfile .mfoot { flex-wrap: wrap; }
 .mcard.mfile #models-file-msg { flex-basis: 100%; }
 
-/* 左栏：资料库固定在上面（可折叠、文件夹多时自己滚动），对话历史单独滚动 */
-.side-lib { flex: none; display: flex; flex-direction: column; min-height: 0; }
-.side-lib .fold { margin: 0; width: auto; height: 24px; padding: 0 4px 0 0; gap: 4px; font-size: 12px; color: var(--muted); justify-content: flex-start; }
-.side-lib .fold .chev { transition: transform .15s; }
-.side-lib.folded .fold .chev { transform: rotate(-90deg); }
-.side-lib.folded .side-folders { display: none; }
-.side-folders { display: flex; flex-direction: column; gap: 2px; max-height: min(260px, 30vh); overflow-y: auto; }
-.side-item.two { align-items: center; }
-.side-item .tt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.side-item .tt .p { font-size: 11px; color: var(--muted); font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.side-hist-head { flex: none; display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--line); padding-top: 12px; }
+/* 左栏：对话历史（搜索、删除） */
+.side-hist-head { flex: none; display: flex; flex-direction: column; gap: 6px; }
 .side-hist-head .side-label { padding-bottom: 0; }
 .hist-q { height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); font: inherit; font-size: 13px; }
 .side-row { position: relative; display: flex; align-items: center; border-radius: 6px; }
@@ -621,4 +612,3 @@ details.think .think-body { max-height: 260px; overflow: auto; padding: 0 12px 1
 .side-del-confirm .acts { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
 .side-more { margin: 4px 0; height: 32px; border: 1px dashed var(--line-strong); border-radius: 6px; background: transparent; color: var(--ink-2); font-size: 12.5px; }
 .side-more:hover { background: var(--selected); }
-.side-folders > * { flex: none; }
